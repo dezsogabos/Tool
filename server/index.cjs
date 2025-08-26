@@ -24,7 +24,34 @@ try {
 } catch (_) {}
 
 const app = express()
+
+// Middleware
 app.use(express.json())
+app.use(express.urlencoded({ extended: true }))
+
+// CORS headers for Vercel
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*')
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization')
+  
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200)
+  } else {
+    next()
+  }
+})
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Server error:', err)
+  res.status(500).json({ 
+    error: 'Internal server error', 
+    message: err.message,
+    timestamp: new Date().toISOString()
+  })
+})
+
 const PORT = process.env.PORT || 5174
 
 // Load config from file if available
@@ -196,7 +223,16 @@ async function getFileIdByAssetId(assetId) {
 }
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true })
+  res.json({ 
+    ok: true, 
+    timestamp: new Date().toISOString(),
+    env: {
+      NODE_ENV: process.env.NODE_ENV,
+      PORT: process.env.PORT,
+      app_usr_set: !!process.env.app_usr,
+      app_auth_set: !!process.env.app_auth
+    }
+  })
 })
 
 // Login verification against Streamlit env variables
@@ -204,19 +240,31 @@ app.post('/api/login', (req, res) => {
   try {
     console.log('Login attempt:', req.body)
     const { username, password } = req.body || {}
+    
+    // Debug environment variables
+    console.log('Environment variables check:')
+    console.log('- app_usr:', process.env.app_usr ? 'SET' : 'NOT SET')
+    console.log('- app_auth:', process.env.app_auth ? 'SET' : 'NOT SET')
+    console.log('- NODE_ENV:', process.env.NODE_ENV)
+    console.log('- PORT:', process.env.PORT)
+    
     const expectedUser = process.env.app_usr || ''
     const expectedPass = process.env.app_auth || ''
+    
     console.log('Expected user from env:', expectedUser ? 'set' : 'not set')
     console.log('Expected pass from env:', expectedPass ? 'set' : 'not set')
+    
     const isEnvMatch = expectedUser && expectedPass && String(username || '') === String(expectedUser) && String(password || '') === String(expectedPass)
     const isAdminDefault = String(username || '') === 'admin' && String(password || '') === 'admin'
+    
     console.log('Env match:', isEnvMatch, 'Admin default:', isAdminDefault)
     const ok = isEnvMatch || isAdminDefault
     console.log('Login result:', ok)
+    
     res.json({ ok })
   } catch (e) {
     console.error('Login error:', e)
-    res.status(500).json({ ok: false, error: 'Login failed' })
+    res.status(500).json({ ok: false, error: 'Login failed', details: e.message })
   }
 })
 
@@ -425,8 +473,15 @@ app.post('/api/assets-page-filtered', (req, res) => {
 console.log('Initializing database...')
 loadCsvIntoDbIfEmpty()
 
-app.listen(PORT, () => {
-  console.log(`API server listening on http://localhost:${PORT}`)
-})
+// For Vercel serverless deployment
+if (process.env.NODE_ENV === 'production') {
+  // Export for Vercel serverless functions
+  module.exports = app
+} else {
+  // Local development server
+  app.listen(PORT, () => {
+    console.log(`API server listening on http://localhost:${PORT}`)
+  })
+}
 
 
