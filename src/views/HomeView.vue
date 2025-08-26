@@ -177,7 +177,11 @@ function handleSearch() {
   const cachedData = getCachedAsset(currentAssetId)
   if (cachedData) {
     console.log(`🚀 Using cached data for asset: ${currentAssetId}`)
+    console.log(`🔍 Cached data:`, cachedData)
+    console.log(`🔍 Cached data.reference:`, cachedData.reference)
+    console.log(`🔍 Cached data.reference?.fileId:`, cachedData.reference?.fileId)
     referenceFileId.value = cachedData.reference?.fileId || ''
+    console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
     predicted.value = Array.isArray(cachedData.predicted) ? cachedData.predicted : []
     
     // Load existing review status if asset was previously reviewed
@@ -629,6 +633,12 @@ function goToNextAsset() {
 // Function to scroll to reference image
 function scrollToReferenceImage() {
   console.log('scrollToReferenceImage called, referenceImageRef:', referenceImageRef.value)
+  console.log('🔍 referenceFileId.value:', referenceFileId.value)
+  console.log('🔍 referenceFileId.value type:', typeof referenceFileId.value)
+  console.log('🔍 referenceFileId.value === null:', referenceFileId.value === null)
+  console.log('🔍 referenceFileId.value === "null":', referenceFileId.value === 'null')
+  console.log('🔍 referenceFileId.value === "undefined":', referenceFileId.value === 'undefined')
+  console.log('🔍 !referenceFileId.value:', !referenceFileId.value)
   
   // Only attempt to scroll if we have a reference file ID (meaning there should be a reference image)
   if (!referenceFileId.value || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
