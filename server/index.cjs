@@ -4,8 +4,8 @@ const path = require('path')
 const { google } = require('googleapis')
 const dotenv = require('dotenv')
 const { parse } = require('csv-parse/sync')
-const Database = require('better-sqlite3')
 const fileUpload = require('express-fileupload')
+const { createClient } = require('@vercel/edge-config')
 
 // Load env (if present)
 dotenv.config()
@@ -163,121 +163,159 @@ function loadDataset() {
   dataset = records
 }
 
-// Enhanced persistence system for serverless environments
-// Supports multiple backends: file-based, environment variables, and external storage
+// Edge Config persistence system for serverless environments
+// Provides reliable, persistent key-value storage
 
-// SQLite database setup with enhanced persistence
-let dbInstance = null
-function getDb() {
-  if (!dbInstance) {
-    let DB_PATH
-    
-    if (process.env.NODE_ENV === 'production') {
-      // In production, try multiple persistence strategies
-      if (process.env.DATABASE_PATH) {
-        // Use custom database path if provided
-        DB_PATH = process.env.DATABASE_PATH
-        console.log(`Using custom database path: ${DB_PATH}`)
-      } else if (process.env.VERCEL_ENV === 'production') {
-        // In Vercel production, use /tmp but with backup strategy
-        DB_PATH = '/tmp/data.db'
-        console.log(`Using Vercel /tmp database: ${DB_PATH}`)
-      } else {
-        // Fallback to /tmp
-        DB_PATH = '/tmp/data.db'
-        console.log(`Using fallback /tmp database: ${DB_PATH}`)
-      }
-    } else {
-      // Local development - use file-based database
-      DB_PATH = path.resolve(__dirname, 'data.db')
-      console.log(`Using local database: ${DB_PATH}`)
+// Edge Config client setup
+let edgeConfigClient = null
+function getEdgeConfig() {
+  if (!edgeConfigClient) {
+    try {
+      edgeConfigClient = createClient(process.env.EDGE_CONFIG)
+      console.log('✅ Edge Config client initialized')
+    } catch (error) {
+      console.warn('⚠️ Edge Config not available, using fallback storage:', error.message)
+      edgeConfigClient = null
     }
-    
-    dbInstance = new Database(DB_PATH)
-    
-    // Initialize database with backup data if empty
-    initializeDatabaseWithBackup()
   }
-  return dbInstance
+  return edgeConfigClient
 }
 
-// Function to initialize database with backup data from environment
-function initializeDatabaseWithBackup() {
-  try {
-    const db = getDb()
-    const row = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
-    
-    // If database is empty and we have backup data in environment
-    if (row && row.cnt === 0 && process.env.BACKUP_CSV_DATA) {
-      console.log('Database is empty, attempting to restore from backup data...')
+// Fallback in-memory storage for local development
+let fallbackStorage = new Map()
+
+// Asset storage functions
+async function getAsset(assetId) {
+  const client = getEdgeConfig()
+  if (client) {
+    try {
+      const key = `asset_${assetId}`
+      const data = await client.get(key)
+      return data || null
+    } catch (error) {
+      console.warn(`Failed to get asset ${assetId} from Edge Config:`, error.message)
+      return fallbackStorage.get(assetId) || null
+    }
+  } else {
+    return fallbackStorage.get(assetId) || null
+  }
+}
+
+async function setAsset(assetId, data) {
+  const client = getEdgeConfig()
+  if (client) {
+    try {
+      const key = `asset_${assetId}`
+      await client.set(key, data)
+      console.log(`✅ Asset ${assetId} saved to Edge Config`)
+    } catch (error) {
+      console.warn(`Failed to save asset ${assetId} to Edge Config:`, error.message)
+      fallbackStorage.set(assetId, data)
+    }
+  } else {
+    fallbackStorage.set(assetId, data)
+  }
+}
+
+async function getAllAssets() {
+  const client = getEdgeConfig()
+  if (client) {
+    try {
+      // Get all keys that start with 'asset_'
+      const allKeys = await client.getAll()
+      const assetKeys = Object.keys(allKeys).filter(key => key.startsWith('asset_'))
+      const assets = {}
       
-      try {
-        const backupData = JSON.parse(process.env.BACKUP_CSV_DATA)
-        if (Array.isArray(backupData) && backupData.length > 0) {
-          const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
-          const insertMany = db.transaction((rows) => {
-            for (const r of rows) {
-              insert.run(String(r.asset_id ?? '').trim(), String(r.predicted_asset_ids ?? ''), String(r.matching_scores ?? ''))
-            }
-          })
-          insertMany(backupData)
-          console.log(`✅ Restored ${backupData.length} records from backup data`)
-        }
-      } catch (backupError) {
-        console.warn('Failed to restore from backup data:', backupError.message)
+      for (const key of assetKeys) {
+        const assetId = key.replace('asset_', '')
+        assets[assetId] = allKeys[key]
       }
+      
+      return assets
+    } catch (error) {
+      console.warn('Failed to get all assets from Edge Config:', error.message)
+      return Object.fromEntries(fallbackStorage)
     }
-  } catch (error) {
-    console.warn('Error initializing database with backup:', error.message)
+  } else {
+    return Object.fromEntries(fallbackStorage)
   }
 }
 
-function ensureTables() {
-  const db = getDb()
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS assets (
-      asset_id TEXT PRIMARY KEY,
-      predicted_asset_ids TEXT,
-      matching_scores TEXT
-    );`
-  )
+async function deleteAllAssets() {
+  const client = getEdgeConfig()
+  if (client) {
+    try {
+      const allKeys = await client.getAll()
+      const assetKeys = Object.keys(allKeys).filter(key => key.startsWith('asset_'))
+      
+      for (const key of assetKeys) {
+        await client.delete(key)
+      }
+      
+      console.log(`✅ Deleted ${assetKeys.length} assets from Edge Config`)
+    } catch (error) {
+      console.warn('Failed to delete assets from Edge Config:', error.message)
+      fallbackStorage.clear()
+    }
+  } else {
+    fallbackStorage.clear()
+  }
 }
 
-function loadCsvIntoDbIfEmpty() {
-  console.log('Loading CSV into DB if empty...')
-  ensureTables()
-  const db = getDb()
-  const row = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
-  console.log('Current asset count:', row?.cnt || 0)
-  if (row && row.cnt > 0) {
-    console.log('DB already has data, skipping import')
+async function getAssetCount() {
+  const client = getEdgeConfig()
+  if (client) {
+    try {
+      const allKeys = await client.getAll()
+      const assetKeys = Object.keys(allKeys).filter(key => key.startsWith('asset_'))
+      return assetKeys.length
+    } catch (error) {
+      console.warn('Failed to get asset count from Edge Config:', error.message)
+      return fallbackStorage.size
+    }
+  } else {
+    return fallbackStorage.size
+  }
+}
+
+// Initialize with sample data if empty (local development only)
+async function initializeWithSampleData() {
+  if (process.env.NODE_ENV === 'production') {
+    console.log('Production environment: No sample data loaded. Users should import CSV data.')
     return
   }
   
-  // In production, don't load sample data - let users import their own CSV
-  if (process.env.NODE_ENV === 'production') {
-    console.log('Production environment: Database is empty. Users should import CSV data.')
+  const count = await getAssetCount()
+  if (count > 0) {
+    console.log(`Database already has ${count} assets, skipping sample data`)
     return
   }
   
   // Load CSV and import (local development)
   if (!CSV_PATH || !fs.existsSync(CSV_PATH)) {
-    // No CSV; table remains empty
-    console.warn('CSV not found; assets table remains empty.')
+    console.log('CSV not found; assets table remains empty.')
     return
   }
+  
   console.log('Loading CSV from:', CSV_PATH)
   const content = fs.readFileSync(CSV_PATH, 'utf-8')
   const records = parse(content, { columns: true, skip_empty_lines: true })
   console.log('Parsed', records.length, 'records from CSV')
-  const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
-  const insertMany = db.transaction((rows) => {
-    for (const r of rows) {
-      insert.run(String(r.asset_id ?? '').trim(), String(r.predicted_asset_ids ?? ''), String(r.matching_scores ?? ''))
+  
+  let imported = 0
+  for (const record of records) {
+    const assetId = String(record.asset_id ?? '').trim()
+    if (assetId) {
+      await setAsset(assetId, {
+        asset_id: assetId,
+        predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
+        matching_scores: String(record.matching_scores ?? '')
+      })
+      imported++
     }
-  })
-  insertMany(records)
-  console.log('CSV import completed')
+  }
+  
+  console.log(`✅ Imported ${imported} records from CSV`)
 }
 
 function parseArrayField(value) {
@@ -505,21 +543,20 @@ app.get('/api/assets/:assetId', async (req, res) => {
     const searchId = String(req.params.assetId).trim()
     if (!searchId) return res.status(400).json({ error: 'assetId required' })
 
-    // Always check database directly
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    const row = db.prepare('SELECT asset_id, predicted_asset_ids, matching_scores FROM assets WHERE asset_id = ? LIMIT 1').get(searchId)
+    // Get asset from Edge Config
+    const assetData = await getAsset(searchId)
     
-    if (!row) {
-      console.log(`🔍 Asset ${searchId} not found in database`)
+    if (!assetData) {
+      console.log(`🔍 Asset ${searchId} not found in Edge Config`)
       return res.json({ 
         assetId: searchId, 
         reference: { fileId: null },
         predicted: []
       })
     }
-    const predictedIds = parseArrayField(row.predicted_asset_ids).map(String)
-    const predictedScores = parseArrayField(row.matching_scores).map(s => Number(s))
+    
+    const predictedIds = parseArrayField(assetData.predicted_asset_ids).map(String)
+    const predictedScores = parseArrayField(assetData.matching_scores).map(s => Number(s))
 
     // Only try to get Google Drive file IDs if ALL_DATASET_FOLDER_ID is properly configured
     let referenceFileId = null
@@ -683,33 +720,36 @@ app.get('/api/local-images/:filename', (req, res) => {
 })
 
 // Paginated asset id list
-app.get('/api/assets-page', (req, res) => {
+app.get('/api/assets-page', async (req, res) => {
   try {
     console.log('API call: /api/assets-page')
     
-    let total = 0
-    let rows = []
-    
-    // Always use database directly
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    console.log('Database initialized')
     const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize) || 20))
     const page = Math.max(1, Number(req.query.page) || 1)
     const offset = (page - 1) * pageSize
-    console.log('Querying database for page', page, 'size', pageSize)
-    const totalRow = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
-    total = totalRow?.cnt || 0
-    console.log('Total assets in DB:', total)
-    rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT ? OFFSET ?').all(pageSize, offset)
-    console.log('Retrieved', rows.length, 'rows')
+    
+    console.log('Querying Edge Config for page', page, 'size', pageSize)
+    
+    // Get all assets from Edge Config
+    const allAssets = await getAllAssets()
+    const assetIds = Object.keys(allAssets).sort((a, b) => {
+      const aNum = parseInt(a) || 0
+      const bNum = parseInt(b) || 0
+      return aNum - bNum
+    })
+    
+    const total = assetIds.length
+    console.log('Total assets in Edge Config:', total)
+    
+    const pageIds = assetIds.slice(offset, offset + pageSize)
+    console.log('Retrieved', pageIds.length, 'asset IDs for page')
     
     res.json({
       page,
       pageSize,
       total,
       pageCount: total ? Math.ceil(total / pageSize) : 0,
-      ids: rows.map(r => r.asset_id),
+      ids: pageIds,
     })
   } catch (e) {
     console.error('Error in /api/assets-page:', e)
@@ -718,23 +758,24 @@ app.get('/api/assets-page', (req, res) => {
 })
 
 // Filtered paginated asset id list
-app.post('/api/assets-page-filtered', (req, res) => {
+app.post('/api/assets-page-filtered', async (req, res) => {
   try {
     console.log('API call: /api/assets-page-filtered')
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    console.log('Database initialized')
     
     const pageSize = Math.max(1, Math.min(100, Number(req.body.pageSize) || 20))
     const page = Math.max(1, Number(req.body.page) || 1)
     const filter = req.body.filter || 'all'
     const reviewedAssets = req.body.reviewedAssets || {}
     
-    console.log('Querying database for page', page, 'size', pageSize, 'filter:', filter)
+    console.log('Querying Edge Config for page', page, 'size', pageSize, 'filter:', filter)
     
-    // Get all asset IDs first
-    const allRows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id').all()
-    const allIds = allRows.map(r => r.asset_id)
+    // Get all asset IDs from Edge Config
+    const allAssets = await getAllAssets()
+    const allIds = Object.keys(allAssets).sort((a, b) => {
+      const aNum = parseInt(a) || 0
+      const bNum = parseInt(b) || 0
+      return aNum - bNum
+    })
     
     // Filter based on review status
     let filteredIds = allIds
@@ -753,7 +794,7 @@ app.post('/api/assets-page-filtered', (req, res) => {
     const offset = (page - 1) * pageSize
     const pageIds = filteredIds.slice(offset, offset + pageSize)
     
-    console.log('Total assets in DB:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
+    console.log('Total assets in Edge Config:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
     
     res.json({
       page,
@@ -770,21 +811,15 @@ app.post('/api/assets-page-filtered', (req, res) => {
 })
 
 // Database status endpoint
-app.get('/api/db-status', (req, res) => {
+app.get('/api/db-status', async (req, res) => {
   try {
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    
-    const row = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
-    const totalRecords = row?.cnt || 0
-    
-    // Get last updated timestamp (we'll use current time for now)
+    const totalRecords = await getAssetCount()
     const lastUpdated = new Date().toISOString()
     
     res.json({
       totalRecords,
       lastUpdated,
-      databaseType: process.env.NODE_ENV === 'production' ? 'in-memory' : 'file-based'
+      databaseType: 'edge-config'
     })
   } catch (e) {
     console.error('Error getting database status:', e)
@@ -837,19 +872,12 @@ app.post('/api/import-csv', async (req, res) => {
     console.log('Parsed', records.length, 'records from CSV')
     sendProgress(30, `Parsed ${records.length} records, preparing database...`)
     
-    // Initialize database
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    
-    // Clear existing data if requested
+        // Clear existing data if requested
     if (options.clearExisting) {
       console.log('Clearing existing data...')
-      db.prepare('DELETE FROM assets').run()
+      await deleteAllAssets()
       sendProgress(40, 'Cleared existing data...')
     }
-    
-    // Prepare insert statement
-    const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
     
     let imported = 0
     let skipped = 0
@@ -881,16 +909,20 @@ app.post('/api/import-csv', async (req, res) => {
           
           // Check for duplicates if skipDuplicates is enabled
           if (options.skipDuplicates) {
-            const existing = db.prepare('SELECT 1 FROM assets WHERE asset_id = ?').get(assetId)
+            const existing = await getAsset(assetId)
             if (existing) {
               skipped++
               continue
             }
           }
           
-                     insert.run(assetId, predictedAssetIds, matchingScores)
-           imported++
-          
+          await setAsset(assetId, {
+            asset_id: assetId,
+            predicted_asset_ids: predictedAssetIds,
+            matching_scores: matchingScores
+          })
+          imported++
+        
         } catch (error) {
           errors++
           errorDetails.push({
@@ -936,12 +968,10 @@ app.post('/api/import-csv', async (req, res) => {
   }
 })
 
-// Initialize database (always ensure tables exist)
-function initializeDatabaseIfNeeded() {
-  console.log('Ensuring database is initialized...')
-  ensureTables()
-  // Note: loadCsvIntoDbIfEmpty() is only called if database is empty
-  // In production, this should be skipped since users import their own CSV
+// Initialize Edge Config with sample data if needed
+async function initializeDatabaseIfNeeded() {
+  console.log('Ensuring Edge Config is initialized...')
+  await initializeWithSampleData()
 }
 
 // Simple test endpoint
@@ -954,26 +984,28 @@ app.get('/api/test', (_req, res) => {
 })
 
 // Debug endpoint to list available assets in database
-app.get('/api/debug/assets', (req, res) => {
+app.get('/api/debug/assets', async (req, res) => {
   try {
     let totalCount = 0
     let assetIds = []
     
-    // Always use database directly
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    
     // Get total count first
-    const countRow = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
-    totalCount = countRow?.cnt || 0
+    totalCount = await getAssetCount()
     
-    const rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT 20').all()
-    assetIds = rows.map(r => r.asset_id)
+    // Get sample assets
+    const allAssets = await getAllAssets()
+    assetIds = Object.keys(allAssets)
+      .sort((a, b) => {
+        const aNum = parseInt(a) || 0
+        const bNum = parseInt(b) || 0
+        return aNum - bNum
+      })
+      .slice(0, 20)
     
     res.json({
       totalAssets: totalCount,
       sampleAssets: assetIds,
-      message: `Database has ${totalCount} total assets, showing first 20`
+      message: `Edge Config has ${totalCount} total assets, showing first 20`
     })
   } catch (error) {
     console.error('Debug assets error:', error)
@@ -984,31 +1016,28 @@ app.get('/api/debug/assets', (req, res) => {
 })
 
 // Debug endpoint to get specific asset data from database
-app.get('/api/debug/asset/:assetId', (req, res) => {
+app.get('/api/debug/asset/:assetId', async (req, res) => {
   try {
     const assetId = req.params.assetId
     console.log(`🔍 Debug request for asset: ${assetId}`)
     
-    initializeDatabaseIfNeeded()
-    const db = getDb()
+    // Get asset data from Edge Config
+    const assetData = await getAsset(assetId)
     
-    // Get asset data from database
-    const row = db.prepare('SELECT * FROM assets WHERE asset_id = ?').get(assetId)
-    
-    if (row) {
-      console.log(`🔍 Found asset ${assetId} in database:`, row)
+    if (assetData) {
+      console.log(`🔍 Found asset ${assetId} in Edge Config:`, assetData)
       res.json({
         assetId,
         found: true,
-        databaseData: row,
-        message: 'Asset found in database'
+        databaseData: assetData,
+        message: 'Asset found in Edge Config'
       })
     } else {
-      console.log(`🔍 Asset ${assetId} not found in database`)
+      console.log(`🔍 Asset ${assetId} not found in Edge Config`)
       res.json({
         assetId,
         found: false,
-        message: 'Asset not found in database'
+        message: 'Asset not found in Edge Config'
       })
     }
   } catch (error) {
@@ -1041,18 +1070,14 @@ app.get('/api/test-asset/:assetId', async (req, res) => {
 })
 
 // Debug endpoint to show database status
-app.get('/api/debug/cache', (req, res) => {
+app.get('/api/debug/cache', async (req, res) => {
   try {
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    
-    const countRow = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
-    const totalCount = countRow?.cnt || 0
+    const totalCount = await getAssetCount()
     
     res.json({
-      databaseType: 'file-based',
+      databaseType: 'edge-config',
       totalAssets: totalCount,
-      message: `Database has ${totalCount} assets`
+      message: `Edge Config has ${totalCount} assets`
     })
   } catch (error) {
     console.error('Debug database error:', error)
@@ -1063,13 +1088,12 @@ app.get('/api/debug/cache', (req, res) => {
 })
 
 // Export database data for backup
-app.get('/api/export-database', (req, res) => {
+app.get('/api/export-database', async (req, res) => {
   try {
     console.log('Database export requested')
-    initializeDatabaseIfNeeded()
-    const db = getDb()
     
-    const rows = db.prepare('SELECT asset_id, predicted_asset_ids, matching_scores FROM assets').all()
+    const allAssets = await getAllAssets()
+    const rows = Object.values(allAssets)
     
     const exportData = {
       timestamp: new Date().toISOString(),
@@ -1081,7 +1105,7 @@ app.get('/api/export-database', (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="database-backup-${new Date().toISOString().split('T')[0]}.json"`)
     res.json(exportData)
     
-    console.log(`✅ Exported ${rows.length} records from database`)
+    console.log(`✅ Exported ${rows.length} records from Edge Config`)
   } catch (error) {
     console.error('Database export error:', error)
     res.status(500).json({
@@ -1145,19 +1169,12 @@ app.post('/api/import-database', async (req, res) => {
     console.log('Parsed', records.length, 'records from backup')
     sendProgress(30, `Parsed ${records.length} records, preparing database...`)
     
-    // Initialize database
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    
     // Clear existing data if requested
     if (options.clearExisting) {
       console.log('Clearing existing data...')
-      db.prepare('DELETE FROM assets').run()
+      await deleteAllAssets()
       sendProgress(40, 'Cleared existing data...')
     }
-    
-    // Prepare insert statement
-    const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
     
     let imported = 0
     let errors = 0
@@ -1190,7 +1207,11 @@ app.post('/api/import-database', async (req, res) => {
             continue
           }
           
-          insert.run(assetId, predictedAssetIds, matchingScores)
+          await setAsset(assetId, {
+            asset_id: assetId,
+            predicted_asset_ids: predictedAssetIds,
+            matching_scores: matchingScores
+          })
           imported++
           
         } catch (error) {
