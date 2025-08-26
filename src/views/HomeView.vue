@@ -185,11 +185,17 @@ function handleSearch() {
   
   // Check cache first
   const cachedData = getCachedAsset(currentAssetId)
-  if (cachedData && cachedData.reference !== undefined) {
-    console.log(`🚀 Using cached data for asset: ${currentAssetId}`)
+  console.log(`🔍 Cache check for asset: ${currentAssetId}`)
+  console.log(`🔍 Cached data exists:`, !!cachedData)
+  if (cachedData) {
     console.log(`🔍 Cached data:`, cachedData)
     console.log(`🔍 Cached data.reference:`, cachedData.reference)
     console.log(`🔍 Cached data.reference?.fileId:`, cachedData.reference?.fileId)
+    console.log(`🔍 Cached data.reference !== undefined:`, cachedData.reference !== undefined)
+  }
+  
+  if (cachedData && cachedData.reference !== undefined) {
+    console.log(`🚀 Using cached data for asset: ${currentAssetId}`)
     
     // Handle null fileId properly - ensure it stays null, not converted to string
     const fileId = cachedData.reference.fileId
@@ -1592,6 +1598,21 @@ function clearAllCachesAndRefresh() {
   // Force a refresh of the current asset if one is loaded
   if (assetId.value.trim()) {
     console.log(`🔄 Refreshing current asset: ${assetId.value}`)
+    handleSearch()
+  }
+}
+
+// Function to clear cache for specific assets that are known to have stale data
+function clearStaleCache() {
+  const staleAssets = ['3882', '9487', '9488', '9490']
+  staleAssets.forEach(assetId => {
+    clearAssetCache(assetId)
+  })
+  console.log('🧹 Cleared cache for potentially stale assets:', staleAssets)
+  
+  // Force refresh if we're currently on one of these assets
+  if (assetId.value.trim() && staleAssets.includes(assetId.value.trim())) {
+    console.log(`🔄 Refreshing current stale asset: ${assetId.value}`)
     handleSearch()
   }
 }
