@@ -367,25 +367,25 @@ app.get('/api/health', (_req, res) => {
         driveTestResult = `error: ${testError.message}`
         console.log('Drive test error:', testError.message)
       }
-    }
-    
-          res.json({ 
-        ok: true, 
-        timestamp: new Date().toISOString(),
-        env: {
-          NODE_ENV: process.env.NODE_ENV,
-          PORT: process.env.PORT,
-          app_usr_set: !!process.env.app_usr,
-          app_auth_set: !!process.env.app_auth,
-          ALL_DATASET_FOLDER_ID: process.env.ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET',
-          GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET',
-          api_credentials_length: apiCredentialsStr.length,
-          API_CREDENTIALS_length: (process.env.API_CREDENTIALS || '').length
-        },
-        googleDrive: driveStatus,
-        driveTest: driveTestResult,
-        message: 'Server is running'
-      })
+         }
+     
+     res.json({ 
+       ok: true, 
+       timestamp: new Date().toISOString(),
+       env: {
+         NODE_ENV: process.env.NODE_ENV,
+         PORT: process.env.PORT,
+         app_usr_set: !!process.env.app_usr,
+         app_auth_set: !!process.env.app_auth,
+         ALL_DATASET_FOLDER_ID: process.env.ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET',
+         GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET',
+         api_credentials_length: apiCredentialsStr.length,
+         API_CREDENTIALS_length: (process.env.API_CREDENTIALS || '').length
+       },
+       googleDrive: driveStatus,
+       driveTest: driveTestResult,
+       message: 'Server is running'
+     })
   } catch (error) {
     console.error('Health check error:', error)
     res.status(500).json({
@@ -398,8 +398,16 @@ app.get('/api/health', (_req, res) => {
 // Login verification against Streamlit env variables
 app.post('/api/login', (req, res) => {
   try {
-    console.log('Login attempt:', req.body)
-    const { username, password } = req.body || {}
+    console.log('Login attempt received')
+    
+    // Validate request body
+    if (!req.body) {
+      console.log('No request body provided')
+      return res.status(400).json({ ok: false, error: 'No request body provided' })
+    }
+    
+    const { username, password } = req.body
+    console.log('Login attempt for username:', username ? 'provided' : 'missing')
     
     // Debug environment variables
     console.log('Environment variables check:')
@@ -414,8 +422,14 @@ app.post('/api/login', (req, res) => {
     console.log('Expected user from env:', expectedUser ? 'set' : 'not set')
     console.log('Expected pass from env:', expectedPass ? 'set' : 'not set')
     
-    const isEnvMatch = expectedUser && expectedPass && String(username || '') === String(expectedUser) && String(password || '') === String(expectedPass)
-    const isAdminDefault = String(username || '') === 'admin' && String(password || '') === 'admin'
+    // Handle missing credentials gracefully
+    if (!username || !password) {
+      console.log('Missing username or password')
+      return res.json({ ok: false, error: 'Username and password required' })
+    }
+    
+    const isEnvMatch = expectedUser && expectedPass && String(username) === String(expectedUser) && String(password) === String(expectedPass)
+    const isAdminDefault = String(username) === 'admin' && String(password) === 'admin'
     
     console.log('Env match:', isEnvMatch, 'Admin default:', isAdminDefault)
     const ok = isEnvMatch || isAdminDefault
