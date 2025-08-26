@@ -2249,7 +2249,11 @@ async function startImport() {
         jobId: result.jobId,
         totalRecords: result.totalRecords,
         status: 'processing',
-        message: 'Import started in background. Monitoring progress...'
+        message: 'Import started in background. Monitoring progress...',
+        imported: 0,
+        skipped: 0,
+        errors: 0,
+        errorDetails: []
       }
       
       // Start monitoring the import progress
