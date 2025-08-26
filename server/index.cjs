@@ -1057,7 +1057,7 @@ app.post('/api/import-csv', async (req, res) => {
         }
         
         // Start background processing
-        processImportChunks(importJobId, totalChunks, chunkSize, options)
+        processImportChunks(importJobId, totalChunks, chunkSize, records.length, options)
         
         res.json({
           jobId: importJobId,
@@ -1180,7 +1180,7 @@ app.post('/api/import-csv', async (req, res) => {
 })
 
 // Background processing function for chunked imports
-async function processImportChunks(jobId, totalChunks, chunkSize, options) {
+async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, options) {
   try {
     console.log(`🔄 Starting background processing for job ${jobId}`)
     
@@ -1290,7 +1290,8 @@ async function processImportChunks(jobId, totalChunks, chunkSize, options) {
         const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100)
         const jobUpdate = {
           status: chunkIndex === totalChunks - 1 ? 'completed' : 'processing',
-          processed: (chunkIndex + 1) * chunkSize,
+          totalRecords: totalRecords,
+          processed: Math.min((chunkIndex + 1) * chunkSize, totalRecords), // Don't exceed total records
           imported: totalImported,
           skipped: totalSkipped,
           errors: totalErrors,
@@ -1299,6 +1300,7 @@ async function processImportChunks(jobId, totalChunks, chunkSize, options) {
           updatedAt: new Date().toISOString()
         }
         
+        console.log(`📊 Updating job ${jobId} progress: ${progress}% (${jobUpdate.processed}/${totalRecords} records)`)
         await client.set(`import_job:${jobId}`, JSON.stringify(jobUpdate))
         
         // Clean up chunk data
@@ -1351,6 +1353,7 @@ app.get('/api/import-status/:jobId', async (req, res) => {
     }
     
     const job = JSON.parse(jobData)
+    console.log(`📊 Job ${jobId} status:`, job)
     res.json(job)
     
   } catch (error) {
