@@ -266,24 +266,47 @@ function parseArrayField(value) {
 async function getFileIdByAssetId(assetId) {
   console.log(`🔍 getFileIdByAssetId called for assetId: ${assetId}`)
   console.log(`🔍 ALL_DATASET_FOLDER_ID: ${ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET'}`)
+  if (ALL_DATASET_FOLDER_ID) {
+    console.log(`🔍 Folder ID value: ${ALL_DATASET_FOLDER_ID}`)
+  }
   const drive = getDrive()
   if (!drive) {
     console.log(`❌ Google Drive not available for asset ${assetId}`)
     return null
   }
   
-  try {
-    const fileName = `${assetId}.jpg`
-    const q = `name='${fileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
-    console.log(`🔍 Google Drive query: ${q}`)
-    const res = await drive.files.list({ q, fields: 'files(id, name)' })
-    const items = res.data.files || []
-    console.log(`🔍 Found ${items.length} files for asset ${assetId}`)
+    try {
+      const fileName = `${assetId}.jpg`
+      const q = `name='${fileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
+      console.log(`🔍 Google Drive query: ${q}`)
+      console.log(`🔍 Attempting to list files in Google Drive...`)
+      const res = await drive.files.list({ q, fields: 'files(id, name)' })
+      console.log(`🔍 Google Drive API response received`)
+      const items = res.data.files || []
+      console.log(`🔍 Found ${items.length} files for asset ${assetId}`)
     if (items.length > 0) {
       console.log(`🔍 File ID: ${items[0].id}, Name: ${items[0].name}`)
       return items[0].id
     } else {
       console.log(`❌ No file found for asset ${assetId} with name ${fileName}`)
+      
+      // Debug: Let's see what files are actually in the folder
+      console.log(`🔍 Debug: Checking what files exist in folder ${ALL_DATASET_FOLDER_ID}`)
+      try {
+        const debugRes = await drive.files.list({ 
+          q: `'${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`, 
+          fields: 'files(id, name)',
+          pageSize: 5
+        })
+        const debugItems = debugRes.data.files || []
+        console.log(`🔍 Debug: Found ${debugItems.length} total files in folder`)
+        if (debugItems.length > 0) {
+          console.log(`🔍 Debug: First few files:`, debugItems.slice(0, 3).map(f => `${f.name} (${f.id})`))
+        }
+      } catch (debugError) {
+        console.log(`🔍 Debug: Error listing folder contents:`, debugError.message)
+      }
+      
       // Try alternative file extensions
       const extensions = ['.jpeg', '.png', '.gif', '.bmp', '.webp']
       for (const ext of extensions) {
