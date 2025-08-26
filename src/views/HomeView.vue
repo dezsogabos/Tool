@@ -654,20 +654,67 @@ function getAssetReviewStatus(assetId) {
   return reviewedAssets.value[assetId]?.status || null
 }
 
+// Function to ensure assets are loaded
+async function ensureAssetsLoaded() {
+  if (!ids.value || ids.value.length === 0) {
+    console.log('🔍 No assets loaded, attempting to load assets...')
+    try {
+      await loadPage(page.value || 1)
+      console.log('🔍 Assets loaded successfully:', ids.value.length, 'assets')
+    } catch (error) {
+      console.error('❌ Failed to load assets:', error)
+      return false
+    }
+  }
+  return true
+}
+
 // Navigation functions
-function goToPreviousAsset() {
+async function goToPreviousAsset() {
+  console.log('🔍 goToPreviousAsset called')
+  console.log('🔍 Current assetId:', assetId.value)
+  console.log('🔍 Available ids:', ids.value)
+  
+  // Ensure assets are loaded
+  if (!(await ensureAssetsLoaded())) {
+    console.log('❌ Failed to load assets, cannot navigate')
+    return
+  }
+  
   const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  console.log('🔍 Current index:', currentIndex)
+  
   if (currentIndex > 0) {
-    assetId.value = ids.value[currentIndex - 1]
+    const newAssetId = ids.value[currentIndex - 1]
+    console.log('🔍 Navigating to previous asset:', newAssetId)
+    assetId.value = newAssetId
     handleSearch() // Use handleSearch instead of loadAssetImages to trigger prefetching
+  } else {
+    console.log('❌ Already at first asset, cannot go previous')
   }
 }
 
-function goToNextAsset() {
+async function goToNextAsset() {
+  console.log('🔍 goToNextAsset called')
+  console.log('🔍 Current assetId:', assetId.value)
+  console.log('🔍 Available ids:', ids.value)
+  
+  // Ensure assets are loaded
+  if (!(await ensureAssetsLoaded())) {
+    console.log('❌ Failed to load assets, cannot navigate')
+    return
+  }
+  
   const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  console.log('🔍 Current index:', currentIndex)
+  
   if (currentIndex < ids.value.length - 1) {
-    assetId.value = ids.value[currentIndex + 1]
+    const newAssetId = ids.value[currentIndex + 1]
+    console.log('🔍 Navigating to next asset:', newAssetId)
+    assetId.value = newAssetId
     handleSearch() // Use handleSearch instead of loadAssetImages to trigger prefetching
+  } else {
+    console.log('❌ Already at last asset, cannot go next')
   }
 }
 
@@ -808,14 +855,30 @@ function loadAssetImages(assetId) {
 
 // Computed properties for navigation
 const canGoToPrevious = computed(() => {
-  if (!assetId.value.trim() || ids.value.length === 0) return false
+  if (!assetId.value || !assetId.value.trim()) {
+    console.log('🔍 canGoToPrevious: no asset ID')
+    return false
+  }
+  if (!ids.value || ids.value.length === 0) {
+    console.log('🔍 canGoToPrevious: no assets loaded')
+    return false
+  }
   const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  console.log('🔍 canGoToPrevious: current index', currentIndex, 'of', ids.value.length)
   return currentIndex > 0
 })
 
 const canGoToNext = computed(() => {
-  if (!assetId.value.trim() || ids.value.length === 0) return false
+  if (!assetId.value || !assetId.value.trim()) {
+    console.log('🔍 canGoToNext: no asset ID')
+    return false
+  }
+  if (!ids.value || ids.value.length === 0) {
+    console.log('🔍 canGoToNext: no assets loaded')
+    return false
+  }
   const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  console.log('🔍 canGoToNext: current index', currentIndex, 'of', ids.value.length)
   return currentIndex < ids.value.length - 1
 })
 
@@ -943,15 +1006,24 @@ function toggleDarkMode() {
 // Keyboard navigation handler
 function handleKeyboardNavigation(event) {
   // Only handle keyboard events when we're on the review tab and have an asset loaded
-  if (activeTab.value !== 'review' || !assetId.value.trim()) return
-  
-  // Don't handle keyboard events if user is typing in an input field
-  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
+  if (activeTab.value !== 'review' || !assetId.value.trim()) {
+    console.log('🔍 Keyboard navigation blocked: not on review tab or no asset loaded')
     return
   }
   
-  // Prevent default behavior for these keys
-  event.preventDefault()
+  // Don't handle keyboard events if user is typing in an input field
+  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
+    console.log('🔍 Keyboard navigation blocked: user typing in input field')
+    return
+  }
+  
+  // Don't handle keyboard events if loading
+  if (loading.value) {
+    console.log('🔍 Keyboard navigation blocked: currently loading')
+    return
+  }
+  
+  console.log(`🔍 Keyboard navigation: ${event.key} pressed`)
   
   switch (event.key) {
     case 'ArrowLeft':
@@ -959,7 +1031,10 @@ function handleKeyboardNavigation(event) {
     case 'A':
       if (canGoToPrevious.value) {
         console.log('⬅️ Keyboard navigation: Previous asset')
+        event.preventDefault()
         goToPreviousAsset()
+      } else {
+        console.log('🔍 Cannot go to previous: at first asset or no assets loaded')
       }
       break
     case 'ArrowRight':
@@ -967,13 +1042,17 @@ function handleKeyboardNavigation(event) {
     case 'D':
       if (canGoToNext.value) {
         console.log('➡️ Keyboard navigation: Next asset')
+        event.preventDefault()
         goToNextAsset()
+      } else {
+        console.log('🔍 Cannot go to next: at last asset or no assets loaded')
       }
       break
     case 'Enter':
     case ' ':
       if (assetId.value.trim()) {
         console.log('✅ Keyboard navigation: Complete review')
+        event.preventDefault()
         handleCompleteReview()
       }
       break
@@ -983,17 +1062,19 @@ function handleKeyboardNavigation(event) {
     case 'R':
       if (assetId.value.trim()) {
         console.log('🗑️ Keyboard navigation: Clear review')
+        event.preventDefault()
         handleClearReview()
       }
       break
-
     case 'Escape':
       console.log('🚪 Keyboard navigation: Hide preview')
+      event.preventDefault()
       hideImagePreview()
       break
     case 'f':
     case 'F':
       console.log('🔍 Keyboard navigation: Focus search')
+      event.preventDefault()
       // Focus the asset ID input field
       const searchInput = document.querySelector('input[placeholder*="asset"]')
       if (searchInput) {
