@@ -2703,21 +2703,22 @@ onMounted(() => {
                      <li>Prefetched Assets: {{ prefetchedAssets.size }}</li>
                    </ul>
                  </div>
-                 <button 
-                   class="warning-button" 
-                   @click="clearAllCaches"
-                 >
-                   <span class="warning-icon">🧹</span>
-                   Clear All Caches
-                 </button>
-                 <button 
-                   class="warning-button" 
-                   @click="clearImageUrlCache"
-                   style="margin-left: 10px;"
-                 >
-                   <span class="warning-icon">🖼️</span>
-                   Clear Image Cache
-                 </button>
+                 <div class="button-group">
+                   <button 
+                     class="warning-button" 
+                     @click="clearAllCaches"
+                   >
+                     <span class="warning-icon">🧹</span>
+                     Clear All Caches
+                   </button>
+                   <button 
+                     class="warning-button" 
+                     @click="clearImageUrlCache"
+                   >
+                     <span class="warning-icon">🖼️</span>
+                     Clear Image Cache
+                   </button>
+                 </div>
                  <p class="cache-hint">
                    <strong>💡 Tip:</strong> Clearing caches will reset the prefetching system and may improve performance if the app is running slowly.
                  </p>
@@ -4822,131 +4823,311 @@ input#assetId::placeholder {
 /* Cache Management Styles */
 .cache-management-section {
   border: 2px solid #f59e0b;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.05) 0%, rgba(245, 158, 11, 0.02) 100%);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.03) 100%);
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.cache-management-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #f59e0b, #d97706, #f59e0b);
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
 
 .cache-stats {
-  background: rgba(245, 158, 11, 0.1);
-  border-radius: 8px;
-  padding: 15px;
-  margin: 15px 0;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(245, 158, 11, 0.08) 100%);
+  border-radius: 10px;
+  padding: 20px;
+  margin: 20px 0;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.1);
+}
+
+.cache-stats p {
+  margin: 0 0 15px 0;
+  font-weight: 600;
+  color: #92400e;
+  font-size: 16px;
 }
 
 .cache-stats ul {
-  margin: 10px 0;
-  padding-left: 20px;
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
 }
 
 .cache-stats li {
-  margin: 5px 0;
+  margin: 8px 0;
   font-family: 'Courier New', monospace;
   font-size: 14px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 6px;
+  border-left: 4px solid #f59e0b;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cache-stats li::before {
+  content: '📊';
+  margin-right: 8px;
 }
 
 .warning-button {
   background: linear-gradient(135deg, #f59e0b, #d97706);
   color: white;
   border: none;
-  padding: 12px 24px;
-  border-radius: 8px;
+  padding: 14px 28px;
+  border-radius: 10px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
-  margin: 10px 0;
+  margin: 10px 5px;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+  position: relative;
+  overflow: hidden;
+}
+
+.warning-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.warning-button:hover::before {
+  left: 100%;
 }
 
 .warning-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+  transform: translateY(-3px);
+  box-shadow: 0 6px 20px rgba(245, 158, 11, 0.4);
+}
+
+.warning-button:active {
+  transform: translateY(-1px);
 }
 
 .warning-icon {
-  margin-right: 8px;
+  margin-right: 10px;
+  font-size: 16px;
 }
 
 .cache-hint {
   font-size: 14px;
-  color: #666;
+  color: #92400e;
   font-style: italic;
-  margin-top: 10px;
+  margin-top: 15px;
+  padding: 12px;
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 8px;
+  border-left: 4px solid #f59e0b;
+}
+
+.cache-hint strong {
+  color: #78350f;
+}
+
+.button-group {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 15px 0;
+}
+
+.button-group .warning-button,
+.button-group .primary-button {
+  flex: 1;
+  min-width: 200px;
 }
 
 /* Google API Health Check Styles */
 .google-api-section {
   border: 2px solid #3b82f6;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(59, 130, 246, 0.02) 100%);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.03) 100%);
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.google-api-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #3b82f6, #2563eb, #3b82f6);
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
 }
 
 .api-status {
-  background: rgba(59, 130, 246, 0.1);
-  border-radius: 8px;
-  padding: 15px;
-  margin: 15px 0;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(59, 130, 246, 0.08) 100%);
+  border-radius: 10px;
+  padding: 20px;
+  margin: 20px 0;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+}
+
+.api-status p {
+  margin: 0 0 15px 0;
+  font-weight: 600;
+  color: #1e40af;
+  font-size: 16px;
 }
 
 .api-status ul {
-  margin: 10px 0;
-  padding-left: 20px;
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
 }
 
 .api-status li {
-  margin: 5px 0;
+  margin: 8px 0;
   font-family: 'Courier New', monospace;
   font-size: 14px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 6px;
+  border-left: 4px solid #3b82f6;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: all 0.2s ease;
+}
+
+.api-status li:hover {
+  background: rgba(255, 255, 255, 0.9);
+  transform: translateX(2px);
+}
+
+.api-status li::before {
+  content: '🔧';
+  margin-right: 8px;
 }
 
 .status-ok {
-  color: #10b981;
-  font-weight: 600;
+  color: #059669;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(5, 150, 105, 0.2);
+  padding: 2px 8px;
+  background: rgba(5, 150, 105, 0.1);
+  border-radius: 4px;
+  border: 1px solid rgba(5, 150, 105, 0.2);
 }
 
 .status-error {
-  color: #ef4444;
-  font-weight: 600;
+  color: #dc2626;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(220, 38, 38, 0.2);
+  padding: 2px 8px;
+  background: rgba(220, 38, 38, 0.1);
+  border-radius: 4px;
+  border: 1px solid rgba(220, 38, 38, 0.2);
 }
 
 .primary-button {
   background: linear-gradient(135deg, #3b82f6, #2563eb);
   color: white;
   border: none;
-  padding: 12px 24px;
-  border-radius: 8px;
+  padding: 14px 28px;
+  border-radius: 10px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
   margin: 10px 0;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  position: relative;
+  overflow: hidden;
+}
+
+.primary-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.primary-button:hover::before {
+  left: 100%;
 }
 
 .primary-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+  transform: translateY(-3px);
+  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+}
+
+.primary-button:active {
+  transform: translateY(-1px);
 }
 
 .primary-button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
   transform: none;
+  box-shadow: none;
+}
+
+.primary-button:disabled::before {
+  display: none;
 }
 
 .primary-icon {
-  margin-right: 8px;
+  margin-right: 10px;
+  font-size: 16px;
 }
 
 .error-message {
-  color: #ef4444;
+  color: #dc2626;
   font-size: 14px;
-  margin-top: 10px;
-  padding: 10px;
-  background: rgba(239, 68, 68, 0.1);
-  border-radius: 6px;
-  border-left: 4px solid #ef4444;
+  margin-top: 15px;
+  padding: 15px;
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.1) 0%, rgba(220, 38, 38, 0.05) 100%);
+  border-radius: 8px;
+  border-left: 4px solid #dc2626;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.1);
+}
+
+.error-message strong {
+  color: #991b1b;
 }
 
 .api-hint {
   font-size: 14px;
-  color: #666;
+  color: #1e40af;
   font-style: italic;
-  margin-top: 10px;
+  margin-top: 15px;
+  padding: 12px;
+  background: rgba(59, 130, 246, 0.1);
+  border-radius: 8px;
+  border-left: 4px solid #3b82f6;
+}
+
+.api-hint strong {
+  color: #1e3a8a;
 }
 
 /* Import Success Notification Styles */
