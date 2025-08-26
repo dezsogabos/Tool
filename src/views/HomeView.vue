@@ -2750,9 +2750,7 @@ onMounted(() => {
                        <li>Google Drive API: <span :class="apiHealthStatus.googleDrive === 'available' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.googleDrive }}</span></li>
                        <li>Environment: {{ apiHealthStatus.env.NODE_ENV || 'Not set' }}</li>
                        <li>Folder ID: <span :class="apiHealthStatus.env.ALL_DATASET_FOLDER_ID === 'SET' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.ALL_DATASET_FOLDER_ID || 'Not set' }}</span></li>
-                       <li>Credentials (file): <span :class="apiHealthStatus.env.GOOGLE_APPLICATION_CREDENTIALS === 'SET' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.GOOGLE_APPLICATION_CREDENTIALS || 'Not set' }}</span></li>
-                       <li>Credentials (api_credentials): <span :class="apiHealthStatus.env.api_credentials_length > 0 ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.api_credentials_length > 0 ? 'SET (' + apiHealthStatus.env.api_credentials_length + ' chars)' : 'NOT SET' }}</span></li>
-                       <li>Credentials (API_CREDENTIALS): <span :class="apiHealthStatus.env.API_CREDENTIALS_length > 0 ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.API_CREDENTIALS_length > 0 ? 'SET (' + apiHealthStatus.env.API_CREDENTIALS_length + ' chars)' : 'NOT SET' }}</span></li>
+                       <li>Credentials: <span :class="apiHealthStatus.env.api_credentials_length > 0 ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.api_credentials_length > 0 ? 'SET (' + apiHealthStatus.env.api_credentials_length + ' chars)' : 'NOT SET' }}</span></li>
                      </ul>
                    </div>
                  <button 
@@ -4839,9 +4837,11 @@ input#assetId::placeholder {
 .cache-management-section {
   border: 2px solid #f59e0b;
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.03) 100%);
-  border-radius: 12px;
+  border-radius: 16px;
   position: relative;
   overflow: hidden;
+  margin: 25px 0;
+  padding: 25px;
 }
 
 .cache-management-section::before {
@@ -4863,18 +4863,18 @@ input#assetId::placeholder {
 
 .cache-stats {
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(245, 158, 11, 0.08) 100%);
-  border-radius: 10px;
-  padding: 20px;
-  margin: 20px 0;
+  border-radius: 12px;
+  padding: 25px;
+  margin: 25px 0;
   border: 1px solid rgba(245, 158, 11, 0.2);
-  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.1);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.1);
 }
 
 .cache-stats p {
-  margin: 0 0 15px 0;
+  margin: 0 0 20px 0;
   font-weight: 600;
   color: #92400e;
-  font-size: 16px;
+  font-size: 18px;
 }
 
 .cache-stats ul {
@@ -4884,36 +4884,44 @@ input#assetId::placeholder {
 }
 
 .cache-stats li {
-  margin: 8px 0;
+  margin: 12px 0;
   font-family: 'Courier New', monospace;
-  font-size: 14px;
-  padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.7);
-  border-radius: 6px;
+  font-size: 15px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 8px;
   border-left: 4px solid #f59e0b;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  transition: all 0.2s ease;
+}
+
+.cache-stats li:hover {
+  background: rgba(255, 255, 255, 0.95);
+  transform: translateX(2px);
 }
 
 .cache-stats li::before {
   content: '📊';
-  margin-right: 8px;
+  margin-right: 12px;
+  font-size: 16px;
 }
 
 .warning-button {
   background: linear-gradient(135deg, #f59e0b, #d97706);
   color: white;
   border: none;
-  padding: 14px 28px;
-  border-radius: 10px;
+  padding: 16px 32px;
+  border-radius: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
-  margin: 10px 5px;
-  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+  margin: 15px 8px;
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
   position: relative;
   overflow: hidden;
+  font-size: 15px;
 }
 
 .warning-button::before {
@@ -4946,14 +4954,15 @@ input#assetId::placeholder {
 }
 
 .cache-hint {
-  font-size: 14px;
+  font-size: 15px;
   color: #92400e;
   font-style: italic;
-  margin-top: 15px;
-  padding: 12px;
+  margin-top: 20px;
+  padding: 16px;
   background: rgba(245, 158, 11, 0.1);
-  border-radius: 8px;
+  border-radius: 10px;
   border-left: 4px solid #f59e0b;
+  line-height: 1.5;
 }
 
 .cache-hint strong {
@@ -4962,24 +4971,26 @@ input#assetId::placeholder {
 
 .button-group {
   display: flex;
-  gap: 10px;
+  gap: 15px;
   flex-wrap: wrap;
-  margin: 15px 0;
+  margin: 20px 0;
 }
 
 .button-group .warning-button,
 .button-group .primary-button {
   flex: 1;
-  min-width: 200px;
+  min-width: 220px;
 }
 
 /* Google API Health Check Styles */
 .google-api-section {
   border: 2px solid #3b82f6;
   background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.03) 100%);
-  border-radius: 12px;
+  border-radius: 16px;
   position: relative;
   overflow: hidden;
+  margin: 25px 0;
+  padding: 25px;
 }
 
 .google-api-section::before {
@@ -4996,18 +5007,18 @@ input#assetId::placeholder {
 
 .api-status {
   background: linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(59, 130, 246, 0.08) 100%);
-  border-radius: 10px;
-  padding: 20px;
-  margin: 20px 0;
+  border-radius: 12px;
+  padding: 25px;
+  margin: 25px 0;
   border: 1px solid rgba(59, 130, 246, 0.2);
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.1);
 }
 
 .api-status p {
-  margin: 0 0 15px 0;
+  margin: 0 0 20px 0;
   font-weight: 600;
   color: #1e40af;
-  font-size: 16px;
+  font-size: 18px;
 }
 
 .api-status ul {
@@ -5017,12 +5028,12 @@ input#assetId::placeholder {
 }
 
 .api-status li {
-  margin: 8px 0;
+  margin: 12px 0;
   font-family: 'Courier New', monospace;
-  font-size: 14px;
-  padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.7);
-  border-radius: 6px;
+  font-size: 15px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 8px;
   border-left: 4px solid #3b82f6;
   display: flex;
   justify-content: space-between;
@@ -5031,13 +5042,14 @@ input#assetId::placeholder {
 }
 
 .api-status li:hover {
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.95);
   transform: translateX(2px);
 }
 
 .api-status li::before {
   content: '🔧';
-  margin-right: 8px;
+  margin-right: 12px;
+  font-size: 16px;
 }
 
 .status-ok {
@@ -5064,15 +5076,16 @@ input#assetId::placeholder {
   background: linear-gradient(135deg, #3b82f6, #2563eb);
   color: white;
   border: none;
-  padding: 14px 28px;
-  border-radius: 10px;
+  padding: 16px 32px;
+  border-radius: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
-  margin: 10px 0;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  margin: 15px 0;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
   position: relative;
   overflow: hidden;
+  font-size: 15px;
 }
 
 .primary-button::before {
@@ -5131,14 +5144,15 @@ input#assetId::placeholder {
 }
 
 .api-hint {
-  font-size: 14px;
+  font-size: 15px;
   color: #1e40af;
   font-style: italic;
-  margin-top: 15px;
-  padding: 12px;
+  margin-top: 20px;
+  padding: 16px;
   background: rgba(59, 130, 246, 0.1);
-  border-radius: 8px;
+  border-radius: 10px;
   border-left: 4px solid #3b82f6;
+  line-height: 1.5;
 }
 
 .api-hint strong {
