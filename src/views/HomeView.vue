@@ -31,6 +31,7 @@ const offlineMode = ref(false) // Offline mode toggle
 const localImagePath = ref('') // Local drive path for images
 const imageActualSources = ref({}) // Track actual source of each image: { fileId: 'local' | 'api' }
 const referenceImageSourceRef = ref('api') // Direct ref for reference image source
+const assetDataReceived = ref(false) // Track if asset data was successfully received from API/cache
 
 // Cache system for improved performance
 const assetCache = ref(new Map()) // Cache for asset data: { assetId: { reference, predicted, timestamp } }
@@ -175,6 +176,7 @@ function handleSearch() {
     predicted.value = []
     selectedPredictedIds.value = []
     rejectedPredictedIds.value = []
+    assetDataReceived.value = false // Reset at the start of search
     // Don't clear imageActualSources here - preserve pre-fetched source information
     referenceImageSourceRef.value = 'api' // Reset reference image source
     if (assetId.value.trim() === '') return
@@ -222,6 +224,7 @@ function handleSearch() {
     
     // Schedule pre-fetching of next assets
     schedulePrefetch()
+    assetDataReceived.value = true // Asset found in cache
     return
   } else if (cachedData) {
     // Cached data exists but has no valid reference
@@ -307,23 +310,27 @@ function handleSearch() {
       
       // Schedule pre-fetching of next assets
       schedulePrefetch()
+      assetDataReceived.value = true // Asset found via API
     })
-    .catch((e) => { error.value = e.message || 'Search failed' })
+    .catch((e) => { 
+      error.value = e.message || 'Search failed'
+      assetDataReceived.value = false // Asset not found or error
+    })
     .finally(() => { 
       loading.value = false
     })
   } catch (error) {
     console.error('Error in handleSearch:', error)
     error.value = error.message || 'Search failed'
+    assetDataReceived.value = false // Unexpected error
     loading.value = false
   }
 }
 
 const showEmptyInfo = computed(() => submitted.value && assetId.value.trim() === '')
 const hasAssetBeenFound = computed(() => {
-  // An asset is considered "found" if we have either a reference image OR predicted images
-  // This handles cases where an asset exists in the database but has no reference image
-  return (referenceFileId.value && referenceFileId.value !== null && referenceFileId.value !== 'null' && referenceFileId.value !== 'undefined') || predicted.value.length > 0
+  // An asset is considered "found" if assetDataReceived is true, meaning the API/cache returned data for it.
+  return assetDataReceived.value
 })
 const showNoMatches = computed(() => submitted.value && !loading.value && !error.value && assetId.value.trim() !== '' && !hasAssetBeenFound.value)
 
@@ -732,6 +739,7 @@ function loadAssetImages(assetId) {
   
   loading.value = true
   error.value = ''
+  assetDataReceived.value = false // Reset at the start of loading
   // Don't clear imageActualSources here - preserve pre-fetched source information
   referenceImageSourceRef.value = 'api' // Reset reference image source
   
@@ -785,8 +793,12 @@ function loadAssetImages(assetId) {
      
      // Schedule pre-fetching of next assets
      schedulePrefetch()
+     assetDataReceived.value = true // Asset found via API
    })
-    .catch((e) => { error.value = e.message || 'Failed to load images' })
+    .catch((e) => { 
+      error.value = e.message || 'Failed to load images'
+      assetDataReceived.value = false // Asset not found or error
+    })
     .finally(() => { loading.value = false })
 }
 
