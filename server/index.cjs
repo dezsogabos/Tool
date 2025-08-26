@@ -347,22 +347,45 @@ app.get('/api/health', (_req, res) => {
     const driveStatus = drive ? 'available' : 'not available'
     console.log('Google Drive API status:', driveStatus)
     
-    res.json({ 
-      ok: true, 
-      timestamp: new Date().toISOString(),
-      env: {
-        NODE_ENV: process.env.NODE_ENV,
-        PORT: process.env.PORT,
-        app_usr_set: !!process.env.app_usr,
-        app_auth_set: !!process.env.app_auth,
-        ALL_DATASET_FOLDER_ID: process.env.ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET',
-        GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET',
-        api_credentials_length: apiCredentialsStr.length,
-        API_CREDENTIALS_length: (process.env.API_CREDENTIALS || '').length
-      },
-      googleDrive: driveStatus,
-      message: 'Server is running'
-    })
+    // Test Google Drive API with a simple query
+    let driveTestResult = 'not tested'
+    if (drive && ALL_DATASET_FOLDER_ID) {
+      try {
+        console.log('Testing Google Drive API with simple query...')
+        const testRes = await drive.files.list({ 
+          q: `'${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`, 
+          fields: 'files(id, name)',
+          pageSize: 3
+        })
+        const testItems = testRes.data.files || []
+        driveTestResult = `found ${testItems.length} files in folder`
+        console.log('Drive test result:', driveTestResult)
+        if (testItems.length > 0) {
+          console.log('Sample files:', testItems.slice(0, 2).map(f => `${f.name} (${f.id})`))
+        }
+      } catch (testError) {
+        driveTestResult = `error: ${testError.message}`
+        console.log('Drive test error:', testError.message)
+      }
+    }
+    
+          res.json({ 
+        ok: true, 
+        timestamp: new Date().toISOString(),
+        env: {
+          NODE_ENV: process.env.NODE_ENV,
+          PORT: process.env.PORT,
+          app_usr_set: !!process.env.app_usr,
+          app_auth_set: !!process.env.app_auth,
+          ALL_DATASET_FOLDER_ID: process.env.ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET',
+          GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET',
+          api_credentials_length: apiCredentialsStr.length,
+          API_CREDENTIALS_length: (process.env.API_CREDENTIALS || '').length
+        },
+        googleDrive: driveStatus,
+        driveTest: driveTestResult,
+        message: 'Server is running'
+      })
   } catch (error) {
     console.error('Health check error:', error)
     res.status(500).json({
@@ -842,6 +865,29 @@ function initializeDatabaseIfNeeded() {
     dbInitialized = true
   }
 }
+
+// Test endpoint for debugging specific assets
+app.get('/api/test-asset/:assetId', async (req, res) => {
+  try {
+    const assetId = req.params.assetId
+    console.log(`🧪 Testing asset: ${assetId}`)
+    
+    const result = await getFileIdByAssetId(assetId)
+    console.log(`🧪 Test result for ${assetId}:`, result)
+    
+    res.json({
+      assetId,
+      fileId: result,
+      success: !!result
+    })
+  } catch (error) {
+    console.error(`🧪 Test error for ${req.params.assetId}:`, error)
+    res.status(500).json({
+      assetId: req.params.assetId,
+      error: error.message
+    })
+  }
+})
 
 // For Vercel serverless deployment
 if (process.env.NODE_ENV === 'production') {
