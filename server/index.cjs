@@ -653,9 +653,6 @@ app.get('/api/assets-page', (req, res) => {
     rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT ? OFFSET ?').all(pageSize, offset)
     console.log('Retrieved', rows.length, 'rows')
     
-    const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize) || 20))
-    const page = Math.max(1, Number(req.query.page) || 1)
-    
     res.json({
       page,
       pageSize,
