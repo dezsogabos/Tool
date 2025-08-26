@@ -182,7 +182,11 @@ function getEdgeConfig() {
 }
 
 // Fallback in-memory storage for local development
-let fallbackStorage = new Map()
+// Use a global variable that persists across function invocations
+if (!global.fallbackStorage) {
+  global.fallbackStorage = new Map()
+}
+let fallbackStorage = global.fallbackStorage
 
 // Asset storage functions
 async function getAsset(assetId) {
@@ -203,6 +207,8 @@ async function getAsset(assetId) {
 
 async function setAsset(assetId, data) {
   const client = getEdgeConfig()
+  console.log(`🔍 setAsset called for ${assetId} - Edge Config available:`, !!client)
+  
   if (client) {
     try {
       const key = `asset_${assetId}`
@@ -211,14 +217,18 @@ async function setAsset(assetId, data) {
     } catch (error) {
       console.warn(`Failed to save asset ${assetId} to Edge Config:`, error.message)
       fallbackStorage.set(assetId, data)
+      console.log(`✅ Asset ${assetId} saved to fallback storage`)
     }
   } else {
     fallbackStorage.set(assetId, data)
+    console.log(`✅ Asset ${assetId} saved to fallback storage (Edge Config not available)`)
   }
 }
 
 async function getAllAssets() {
   const client = getEdgeConfig()
+  console.log('🔍 getAllAssets called - Edge Config available:', !!client)
+  
   if (client) {
     try {
       // Get all keys that start with 'asset_'
@@ -231,13 +241,18 @@ async function getAllAssets() {
         assets[assetId] = allKeys[key]
       }
       
+      console.log(`🔍 Edge Config returned ${Object.keys(assets).length} assets`)
       return assets
     } catch (error) {
       console.warn('Failed to get all assets from Edge Config:', error.message)
-      return Object.fromEntries(fallbackStorage)
+      const fallbackAssets = Object.fromEntries(fallbackStorage)
+      console.log(`🔍 Using fallback storage with ${Object.keys(fallbackAssets).length} assets`)
+      return fallbackAssets
     }
   } else {
-    return Object.fromEntries(fallbackStorage)
+    const fallbackAssets = Object.fromEntries(fallbackStorage)
+    console.log(`🔍 Edge Config not available, using fallback storage with ${Object.keys(fallbackAssets).length} assets`)
+    return fallbackAssets
   }
 }
 
@@ -1073,11 +1088,15 @@ app.get('/api/test-asset/:assetId', async (req, res) => {
 app.get('/api/debug/cache', async (req, res) => {
   try {
     const totalCount = await getAssetCount()
+    const client = getEdgeConfig()
+    const fallbackSize = fallbackStorage.size
     
     res.json({
       databaseType: 'edge-config',
       totalAssets: totalCount,
-      message: `Edge Config has ${totalCount} assets`
+      edgeConfigAvailable: !!client,
+      fallbackStorageSize: fallbackSize,
+      message: `Edge Config has ${totalCount} assets (fallback: ${fallbackSize})`
     })
   } catch (error) {
     console.error('Debug database error:', error)
