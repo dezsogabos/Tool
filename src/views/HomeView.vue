@@ -225,7 +225,6 @@ function handleSearch() {
     // Schedule pre-fetching of next assets
     schedulePrefetch()
     assetDataReceived.value = true // Asset found in cache
-    console.log(`🔍 Set assetDataReceived.value to: true for cached asset: ${currentAssetId}`)
     return
   } else if (cachedData) {
     // Cached data exists but has no valid reference
@@ -304,8 +303,6 @@ function handleSearch() {
       
       // Set asset data received immediately after processing
       assetDataReceived.value = true // Asset found via API
-      console.log(`🔍 Set assetDataReceived.value to: true for asset: ${assetId}`)
-      console.log(`🔍 Set assetDataReceived.value to: true for asset: ${currentAssetId}`)
       
       // Auto-scroll to reference image after DOM update
       nextTick(() => {
@@ -335,7 +332,6 @@ function handleSearch() {
 const showEmptyInfo = computed(() => submitted.value && assetId.value.trim() === '')
 const hasAssetBeenFound = computed(() => {
   // An asset is considered "found" if assetDataReceived is true, meaning the API/cache returned data for it.
-  console.log(`🔍 hasAssetBeenFound computed - assetDataReceived.value: ${assetDataReceived.value}`)
   return assetDataReceived.value
 })
 const showNoMatches = computed(() => submitted.value && !loading.value && !error.value && assetId.value.trim() !== '' && !hasAssetBeenFound.value)
