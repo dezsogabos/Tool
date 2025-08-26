@@ -1578,6 +1578,27 @@ function clearAllCaches() {
   console.log('🧹 All caches and source tracking cleared')
 }
 
+// Function to clear cache for a specific asset and force refresh
+function clearAssetCache(assetId) {
+  assetCache.value.delete(assetId)
+  prefetchedAssets.value.delete(assetId)
+  console.log(`🧹 Cleared cache for asset: ${assetId}`)
+}
+
+// Debug function to check what's in the database for an asset
+async function debugAsset(assetId) {
+  try {
+    console.log(`🔍 Debugging asset: ${assetId}`)
+    const response = await fetch(`/api/assets/${encodeURIComponent(assetId)}`)
+    const data = await response.json()
+    console.log(`🔍 Database data for ${assetId}:`, data)
+    return data
+  } catch (error) {
+    console.error(`❌ Error debugging asset ${assetId}:`, error)
+    return null
+  }
+}
+
 // Function to clear only image URL cache
 function clearImageUrlCache() {
   imageUrlCache.value.clear()
