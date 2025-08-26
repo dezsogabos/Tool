@@ -31,14 +31,7 @@ const logout = () => {
             class="nav-tab"
             :class="{ active: currentRoute === 'home' }"
           >
-            🏠 Review
-          </router-link>
-          <router-link 
-            to="/import" 
-            class="nav-tab"
-            :class="{ active: currentRoute === 'import' }"
-          >
-            📁 Import
+            🏠 Asset Review Tool
           </router-link>
         </div>
         
