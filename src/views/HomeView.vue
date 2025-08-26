@@ -168,7 +168,7 @@ function handleSearch() {
     referenceImageSourceRef.value = 'api' // Reset reference image source
     if (assetId.value.trim() === '') return
   
-  const currentAssetId = assetId.value.trim()
+    const currentAssetId = assetId.value.trim()
   
   // Check cache first
   const cachedData = getCachedAsset(currentAssetId)
@@ -265,6 +265,11 @@ function handleSearch() {
     .finally(() => { 
       loading.value = false
     })
+  } catch (error) {
+    console.error('Error in handleSearch:', error)
+    error.value = error.message || 'Search failed'
+    loading.value = false
+  }
 }
 
 const showEmptyInfo = computed(() => submitted.value && assetId.value.trim() === '')
