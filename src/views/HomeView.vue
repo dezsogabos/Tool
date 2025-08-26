@@ -1390,6 +1390,13 @@ function clearAllCaches() {
   console.log('🧹 All caches and source tracking cleared')
 }
 
+// Function to clear only image URL cache
+function clearImageUrlCache() {
+  imageUrlCache.value.clear()
+  getImageUrlCallCount = 0
+  console.log('🧹 Image URL cache cleared')
+}
+
 // Pre-fetching functions
 async function prefetchAsset(assetId) {
   if (!assetId || prefetchedAssets.value.has(assetId)) {
@@ -1652,22 +1659,23 @@ function loadOfflineSettings() {
 }
 
 function getImageUrl(fileId, assetId = null) {
-  // Prevent infinite loops
-  getImageUrlCallCount++
-  if (getImageUrlCallCount > MAX_GETIMAGEURL_CALLS) {
-    console.error('getImageUrl called too many times, preventing infinite loop')
-    return ''
-  }
-  
   if (!fileId) {
     console.warn('getImageUrl called with null/undefined fileId')
     return ''
   }
   
-  // Check cache first
+  // Check cache first - this should prevent most repeated calls
   const cachedUrl = getCachedImageUrl(fileId)
   if (cachedUrl) {
     return cachedUrl
+  }
+  
+  // Prevent infinite loops only if we're not using cache
+  getImageUrlCallCount++
+  if (getImageUrlCallCount > MAX_GETIMAGEURL_CALLS) {
+    console.error('getImageUrl called too many times, preventing infinite loop')
+    // Return a fallback URL instead of empty string
+    return `/api/images/${fileId}`
   }
   
   // Clear any existing timeout
@@ -2613,6 +2621,14 @@ onMounted(() => {
                  >
                    <span class="warning-icon">🧹</span>
                    Clear All Caches
+                 </button>
+                 <button 
+                   class="warning-button" 
+                   @click="clearImageUrlCache"
+                   style="margin-left: 10px;"
+                 >
+                   <span class="warning-icon">🖼️</span>
+                   Clear Image Cache
                  </button>
                  <p class="cache-hint">
                    <strong>💡 Tip:</strong> Clearing caches will reset the prefetching system and may improve performance if the app is running slowly.
