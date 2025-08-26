@@ -158,11 +158,18 @@ function loadDataset() {
 }
 
 // SQLite database setup
-const DB_PATH = path.resolve(__dirname, 'data.db')
 let dbInstance = null
 function getDb() {
   if (!dbInstance) {
-    dbInstance = new Database(DB_PATH)
+    // In serverless environment, use in-memory database
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Using in-memory database for serverless environment')
+      dbInstance = new Database(':memory:')
+    } else {
+      const DB_PATH = path.resolve(__dirname, 'data.db')
+      console.log('Using file-based database for local development')
+      dbInstance = new Database(DB_PATH)
+    }
   }
   return dbInstance
 }
@@ -188,7 +195,29 @@ function loadCsvIntoDbIfEmpty() {
     console.log('DB already has data, skipping import')
     return
   }
-  // Load CSV and import
+  
+  // In production (serverless), use sample data since CSV won't be available
+  if (process.env.NODE_ENV === 'production') {
+    console.log('Loading sample data for production environment')
+    const sampleData = [
+      { asset_id: '1', predicted_asset_ids: '["2", "3", "4"]', matching_scores: '[0.95, 0.87, 0.82]' },
+      { asset_id: '2', predicted_asset_ids: '["1", "3", "5"]', matching_scores: '[0.92, 0.89, 0.78]' },
+      { asset_id: '3', predicted_asset_ids: '["1", "2", "6"]', matching_scores: '[0.88, 0.85, 0.76]' },
+      { asset_id: '4', predicted_asset_ids: '["1", "5", "7"]', matching_scores: '[0.84, 0.81, 0.73]' },
+      { asset_id: '5', predicted_asset_ids: '["2", "4", "8"]', matching_scores: '[0.79, 0.77, 0.71]' }
+    ]
+    const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
+    const insertMany = db.transaction((rows) => {
+      for (const r of rows) {
+        insert.run(String(r.asset_id), String(r.predicted_asset_ids), String(r.matching_scores))
+      }
+    })
+    insertMany(sampleData)
+    console.log('Sample data import completed')
+    return
+  }
+  
+  // Load CSV and import (local development)
   if (!CSV_PATH || !fs.existsSync(CSV_PATH)) {
     // No CSV; table remains empty
     console.warn('CSV not found; assets table remains empty.')
@@ -298,7 +327,7 @@ app.get('/api/assets/:assetId', async (req, res) => {
     const searchId = String(req.params.assetId).trim()
     if (!searchId) return res.status(400).json({ error: 'assetId required' })
 
-    ensureTables()
+    initializeDatabaseIfNeeded()
     const db = getDb()
     const row = db.prepare('SELECT asset_id, predicted_asset_ids, matching_scores FROM assets WHERE asset_id = ? LIMIT 1').get(searchId)
     if (!row) return res.json({ assetId: searchId, matches: [] })
@@ -422,7 +451,7 @@ app.get('/api/local-images/:filename', (req, res) => {
 app.get('/api/assets-page', (req, res) => {
   try {
     console.log('API call: /api/assets-page')
-    ensureTables()
+    initializeDatabaseIfNeeded()
     const db = getDb()
     console.log('Database initialized')
     const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize) || 20))
@@ -451,7 +480,7 @@ app.get('/api/assets-page', (req, res) => {
 app.post('/api/assets-page-filtered', (req, res) => {
   try {
     console.log('API call: /api/assets-page-filtered')
-    ensureTables()
+    initializeDatabaseIfNeeded()
     const db = getDb()
     console.log('Database initialized')
     
@@ -499,11 +528,14 @@ app.post('/api/assets-page-filtered', (req, res) => {
   }
 })
 
-// Initialize database on server startup (only once)
-if (!global.dbInitialized) {
-  console.log('Initializing database...')
-  loadCsvIntoDbIfEmpty()
-  global.dbInitialized = true
+// Initialize database lazily (only when needed)
+let dbInitialized = false
+function initializeDatabaseIfNeeded() {
+  if (!dbInitialized) {
+    console.log('Initializing database...')
+    loadCsvIntoDbIfEmpty()
+    dbInitialized = true
+  }
 }
 
 // For Vercel serverless deployment
