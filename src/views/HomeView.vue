@@ -1939,20 +1939,7 @@ onMounted(() => {
   refreshDbStatus()
 })
 
-// Function to clear all caches and reset prefetching
-function clearAllCaches() {
-  console.log('🧹 Clearing all caches and resetting prefetching system')
-  assetCache.value.clear()
-  imageUrlCache.value.clear()
-  prefetchedAssets.value.clear()
-  imageActualSources.value = {}
-  isPrefetching.value = false
-  prefetchProgress.value = 0
-  prefetchEnabled.value = true
-  cacheHits.value = 0
-  cacheMisses.value = 0
-  console.log('✅ All caches cleared and prefetching system reset')
-}
+
 
 </script>
 
