@@ -73,7 +73,8 @@ const progressMessage = ref('')
 const importOptions = ref({
   clearExisting: false,
   skipDuplicates: true,
-  batchSize: 1000
+  batchSize: 1000,
+  chunkSize: 5000
 })
 const importResult = ref(null)
 const dbStatus = ref({
@@ -2239,42 +2240,35 @@ async function startImport() {
       throw new Error(`Import failed: ${response.statusText}`)
     }
     
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
+    const result = await response.json()
     
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      
-      const chunk = decoder.decode(value)
-      const lines = chunk.split('\n')
-      
-      for (const line of lines) {
-        if (line.trim()) {
-          try {
-            const data = JSON.parse(line)
-            if (data.type === 'progress') {
-              importProgress.value = data.progress
-              progressMessage.value = data.message
-            } else if (data.type === 'result') {
-              importResult.value = data.result
-              importProgress.value = 100
-              progressMessage.value = 'Import completed!'
-            }
-          } catch (e) {
-            // Skip invalid JSON lines
-          }
-        }
+    // Check if this is a chunked import (large file)
+    if (result.jobId) {
+      console.log('🔄 Large file detected, using chunked processing')
+      importResult.value = {
+        jobId: result.jobId,
+        totalRecords: result.totalRecords,
+        status: 'processing',
+        message: 'Import started in background. Monitoring progress...'
       }
-    }
-    
-    // Refresh database status after import
-    await refreshDbStatus()
-    
-    // If import was successful and we're on the import tab, refresh the asset review
-    if (importResult.value && importResult.value.imported > 0) {
-      console.log('🔄 Import successful, refreshing asset review tab...')
-      await refreshAssetReviewAfterImport()
+      
+      // Start monitoring the import progress
+      await monitorImportProgress(result.jobId)
+    } else {
+      // Small file - immediate processing
+      console.log('✅ Small file processed immediately')
+      importResult.value = result
+      importProgress.value = 100
+      progressMessage.value = 'Import completed!'
+      
+      // Refresh database status after import
+      await refreshDbStatus()
+      
+      // If import was successful, refresh the asset review
+      if (result.imported > 0) {
+        console.log('🔄 Import successful, refreshing asset review tab...')
+        await refreshAssetReviewAfterImport()
+      }
     }
     
   } catch (error) {
@@ -2290,6 +2284,114 @@ async function startImport() {
   } finally {
     importing.value = false
   }
+}
+
+async function monitorImportProgress(jobId) {
+  console.log(`🔄 Monitoring import progress for job: ${jobId}`)
+  
+  const maxAttempts = 300 // 5 minutes with 1-second intervals
+  let attempts = 0
+  
+  const checkProgress = async () => {
+    try {
+      const response = await fetch(`/api/import-status/${jobId}`)
+      if (!response.ok) {
+        throw new Error(`Failed to check progress: ${response.statusText}`)
+      }
+      
+      const jobStatus = await response.json()
+      console.log('📊 Import progress:', jobStatus)
+      
+      // Update progress display
+      if (jobStatus.progress !== undefined) {
+        importProgress.value = jobStatus.progress
+        progressMessage.value = `Processing... ${jobStatus.progress}% (${jobStatus.processed || 0}/${jobStatus.totalRecords || 0} records)`
+      }
+      
+      // Check if job is completed
+      if (jobStatus.status === 'completed') {
+        console.log('✅ Import completed successfully')
+        importResult.value = {
+          totalRecords: jobStatus.totalRecords,
+          imported: jobStatus.imported,
+          skipped: jobStatus.skipped,
+          errors: jobStatus.errors,
+          errorDetails: jobStatus.errorDetails || [],
+          status: 'completed'
+        }
+        importProgress.value = 100
+        progressMessage.value = 'Import completed!'
+        
+        // Refresh database status and asset review
+        await refreshDbStatus()
+        if (jobStatus.imported > 0) {
+          console.log('🔄 Import successful, refreshing asset review tab...')
+          await refreshAssetReviewAfterImport()
+        }
+        return true
+        
+      } else if (jobStatus.status === 'failed') {
+        console.error('❌ Import failed:', jobStatus.error)
+        importResult.value = {
+          totalRecords: jobStatus.totalRecords || 0,
+          imported: 0,
+          skipped: 0,
+          errors: 1,
+          errorDetails: [{ line: 0, message: jobStatus.error || 'Import failed' }],
+          status: 'failed'
+        }
+        progressMessage.value = `Import failed: ${jobStatus.error || 'Unknown error'}`
+        return true
+        
+      } else if (jobStatus.status === 'processing') {
+        // Continue monitoring
+        attempts++
+        if (attempts >= maxAttempts) {
+          console.warn('⚠️ Import monitoring timeout')
+          importResult.value = {
+            totalRecords: jobStatus.totalRecords || 0,
+            imported: jobStatus.imported || 0,
+            skipped: jobStatus.skipped || 0,
+            errors: jobStatus.errors || 0,
+            errorDetails: jobStatus.errorDetails || [],
+            status: 'timeout',
+            message: 'Import monitoring timed out. Check status manually.'
+          }
+          progressMessage.value = 'Import monitoring timed out. Check status manually.'
+          return true
+        }
+        
+        // Continue monitoring after 1 second
+        setTimeout(checkProgress, 1000)
+        return false
+        
+      }
+      
+    } catch (error) {
+      console.error('❌ Error monitoring import progress:', error)
+      attempts++
+      
+      if (attempts >= maxAttempts) {
+        importResult.value = {
+          totalRecords: 0,
+          imported: 0,
+          skipped: 0,
+          errors: 1,
+          errorDetails: [{ line: 0, message: 'Failed to monitor import progress' }],
+          status: 'monitoring_failed'
+        }
+        progressMessage.value = 'Failed to monitor import progress'
+        return true
+      }
+      
+      // Retry after 2 seconds
+      setTimeout(checkProgress, 2000)
+      return false
+    }
+  }
+  
+  // Start monitoring
+  await checkProgress()
 }
 
 async function refreshDbStatus() {
@@ -2985,6 +3087,17 @@ async function importDatabase() {
                   <option value="1000">1000 records</option>
                   <option value="5000">5000 records</option>
                 </select>
+              </div>
+
+              <div class="option-group">
+                <label>Chunk Size (for large files):</label>
+                <select v-model="importOptions.chunkSize" :disabled="importing">
+                  <option value="1000">1000 records</option>
+                  <option value="5000">5000 records</option>
+                  <option value="10000">10000 records</option>
+                  <option value="20000">20000 records</option>
+                </select>
+                <small>Files with more than 10,000 records will be processed in chunks to avoid timeouts</small>
               </div>
             </div>
 

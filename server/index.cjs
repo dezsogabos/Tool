@@ -995,178 +995,367 @@ app.get('/api/db-status', async (req, res) => {
   }
 })
 
-// CSV import endpoint
+// CSV import endpoint with chunked processing to avoid timeouts
 app.post('/api/import-csv', async (req, res) => {
   try {
     console.log('CSV import request received')
     
-    // Set headers for streaming response
-    res.setHeader('Content-Type', 'text/plain')
-    res.setHeader('Transfer-Encoding', 'chunked')
-    
-    const sendProgress = (progress, message) => {
-      const data = JSON.stringify({ type: 'progress', progress, message }) + '\n'
-      res.write(data)
-    }
-    
-    const sendResult = (result) => {
-      const data = JSON.stringify({ type: 'result', result }) + '\n'
-      res.write(data)
-      res.end()
-    }
-    
     // Check if file was uploaded
     if (!req.files || !req.files.file) {
-      sendResult({
+      return res.status(400).json({
         totalRecords: 0,
         imported: 0,
         skipped: 0,
         errors: 1,
         errorDetails: [{ line: 0, message: 'No file uploaded' }]
       })
-      return
     }
     
     const file = req.files.file
     const options = req.body.options ? JSON.parse(req.body.options) : {}
     
     console.log('Processing file:', file.name, 'Size:', file.size)
-    sendProgress(10, 'Reading CSV file...')
     
     // Parse CSV content
     const content = file.data.toString('utf-8')
     const records = parse(content, { columns: true, skip_empty_lines: true })
     
     console.log('Parsed', records.length, 'records from CSV')
-    sendProgress(30, `Parsed ${records.length} records, preparing database...`)
     
-        // Clear existing data if requested
-    if (options.clearExisting) {
-      console.log('Clearing existing data...')
-      await deleteAllAssets()
-      sendProgress(40, 'Cleared existing data...')
+    // For large files, use chunked processing
+    const isLargeFile = records.length > 10000 // Process in chunks if more than 10k records
+    const chunkSize = parseInt(options.chunkSize) || 5000 // Process 5k records per chunk
+    
+    if (isLargeFile) {
+      console.log(`Large file detected (${records.length} records), using chunked processing`)
+      
+      // Store import job in Redis for background processing
+      const importJobId = `import_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      const importJob = {
+        id: importJobId,
+        status: 'pending',
+        totalRecords: records.length,
+        processed: 0,
+        imported: 0,
+        skipped: 0,
+        errors: 0,
+        errorDetails: [],
+        createdAt: new Date().toISOString(),
+        options: options
+      }
+      
+      // Store the job and records in Redis
+      const client = await getRedisClient()
+      if (client) {
+        await client.set(`import_job:${importJobId}`, JSON.stringify(importJob))
+        
+        // Store records in chunks to avoid memory issues
+        const totalChunks = Math.ceil(records.length / chunkSize)
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = records.slice(i * chunkSize, (i + 1) * chunkSize)
+          await client.set(`import_data:${importJobId}:chunk_${i}`, JSON.stringify(chunk))
+        }
+        
+        // Start background processing
+        processImportChunks(importJobId, totalChunks, chunkSize, options)
+        
+        res.json({
+          jobId: importJobId,
+          totalRecords: records.length,
+          chunkSize: chunkSize,
+          totalChunks: totalChunks,
+          message: 'Import started in background. Use /api/import-status/:jobId to check progress.',
+          status: 'processing'
+        })
+      } else {
+        throw new Error('Redis client not available for chunked processing')
+      }
+    } else {
+      // For smaller files, process immediately
+      console.log('Small file, processing immediately')
+      
+      // Clear existing data if requested
+      if (options.clearExisting) {
+        console.log('Clearing existing data...')
+        await deleteAllAssets()
+      }
+      
+      let imported = 0
+      let skipped = 0
+      let errors = 0
+      const errorDetails = []
+      const batchSize = parseInt(options.batchSize) || 1000
+      
+      // Process records in batches
+      for (let i = 0; i < records.length; i += batchSize) {
+        const batch = records.slice(i, i + batchSize)
+        
+        // Prepare batch data
+        const batchAssets = {}
+        const batchErrors = []
+        
+        for (let j = 0; j < batch.length; j++) {
+          const record = batch[j]
+          const lineNumber = i + j + 2 // +2 for header row and 0-based index
+          
+          try {
+            const assetId = String(record.asset_id ?? '').trim()
+            const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+            const matchingScores = String(record.matching_scores ?? '')
+            
+            if (!assetId) {
+              skipped++
+              continue
+            }
+            
+            // Check for duplicates if skipDuplicates is enabled
+            if (options.skipDuplicates) {
+              const existing = await getAsset(assetId)
+              if (existing) {
+                skipped++
+                continue
+              }
+            }
+            
+            batchAssets[assetId] = {
+              asset_id: assetId,
+              predicted_asset_ids: predictedAssetIds,
+              matching_scores: matchingScores
+            }
+          
+          } catch (error) {
+            errors++
+            batchErrors.push({
+              line: lineNumber,
+              message: error.message
+            })
+          }
+        }
+        
+        // Save batch to Redis
+        if (Object.keys(batchAssets).length > 0) {
+          try {
+            const batchResult = await setAssetsBatch(batchAssets)
+            imported += batchResult.successful
+            errors += batchResult.failed
+            
+            // Add any batch errors to error details
+            errorDetails.push(...batchErrors)
+            
+            console.log(`📊 Batch ${Math.floor(i / batchSize) + 1}: ${batchResult.successful} imported, ${batchResult.failed} failed`)
+          } catch (batchError) {
+            console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message)
+            errors += Object.keys(batchAssets).length
+            errorDetails.push({
+              line: i + 1,
+              message: `Batch failed: ${batchError.message}`
+            })
+          }
+        }
+      }
+      
+      const result = {
+        totalRecords: records.length,
+        imported,
+        skipped,
+        errors,
+        errorDetails,
+        status: 'completed'
+      }
+      
+      console.log('Import completed:', result)
+      res.json(result)
     }
-    
-    let imported = 0
-    let skipped = 0
-    let errors = 0
-    const errorDetails = []
-    const batchSize = parseInt(options.batchSize) || 1000
-    
-         // Process records in batches
-     for (let i = 0; i < records.length; i += batchSize) {
-       const batch = records.slice(i, i + batchSize)
-       const progress = 40 + Math.floor((i / records.length) * 50)
-       
-       sendProgress(progress, `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)}...`)
-       
-       // Prepare batch data
-       const batchAssets = {}
-       const batchErrors = []
-       
-       for (let j = 0; j < batch.length; j++) {
-         const record = batch[j]
-         const lineNumber = i + j + 2 // +2 for header row and 0-based index
-         
-         try {
-           const assetId = String(record.asset_id ?? '').trim()
-           const predictedAssetIds = String(record.predicted_asset_ids ?? '')
-           const matchingScores = String(record.matching_scores ?? '')
-           
-           if (!assetId) {
-             skipped++
-             continue
-           }
-           
-           // Check for duplicates if skipDuplicates is enabled
-           if (options.skipDuplicates) {
-             const existing = await getAsset(assetId)
-             if (existing) {
-               skipped++
-               continue
-             }
-           }
-           
-           batchAssets[assetId] = {
-             asset_id: assetId,
-             predicted_asset_ids: predictedAssetIds,
-             matching_scores: matchingScores
-           }
-         
-         } catch (error) {
-           errors++
-           batchErrors.push({
-             line: lineNumber,
-             message: error.message
-           })
-         }
-       }
-       
-       // Save batch to Blob Store
-       if (Object.keys(batchAssets).length > 0) {
-         try {
-           const batchResult = await setAssetsBatch(batchAssets)
-           imported += batchResult.successful
-           errors += batchResult.failed
-           
-           // Add any batch errors to error details
-           errorDetails.push(...batchErrors)
-           
-           // Debug: Log progress
-           console.log(`📊 Batch ${Math.floor(i / batchSize) + 1}: ${batchResult.successful} imported, ${batchResult.failed} failed`)
-         } catch (batchError) {
-           console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message)
-           errors += Object.keys(batchAssets).length
-           errorDetails.push({
-             line: i + 1,
-             message: `Batch failed: ${batchError.message}`
-           })
-         }
-       }
-     }
-    
-    sendProgress(90, 'Finalizing import...')
-    
-    const result = {
-      totalRecords: records.length,
-      imported,
-      skipped,
-      errors,
-      errorDetails
-    }
-    
-    console.log('Import completed:', result)
-    
-    // Debug: Verify that assets were actually saved
-    console.log('🔍 Debug: Verifying saved assets...')
-    const verificationCount = await getAssetCount()
-    console.log(`🔍 Debug: Asset count after import: ${verificationCount}`)
-    
-    if (verificationCount === 0 && imported > 0) {
-      console.log('⚠️ WARNING: Assets were imported but count is 0! This indicates a persistence issue.')
-    }
-    
-    sendProgress(100, 'Import completed successfully!')
-    sendResult(result)
     
   } catch (error) {
     console.error('CSV import error:', error)
-    const errorResult = {
+    res.status(500).json({
       totalRecords: 0,
       imported: 0,
       skipped: 0,
       errors: 1,
       errorDetails: [{ line: 0, message: error.message }]
+    })
+  }
+})
+
+// Background processing function for chunked imports
+async function processImportChunks(jobId, totalChunks, chunkSize, options) {
+  try {
+    console.log(`🔄 Starting background processing for job ${jobId}`)
+    
+    const client = await getRedisClient()
+    if (!client) {
+      throw new Error('Redis client not available')
     }
     
-    if (!res.headersSent) {
-      res.setHeader('Content-Type', 'application/json')
-      res.status(500).json(errorResult)
-    } else {
-      const data = JSON.stringify({ type: 'result', result: errorResult }) + '\n'
-      res.write(data)
-      res.end()
+    // Clear existing data if requested
+    if (options.clearExisting) {
+      console.log('Clearing existing data...')
+      await deleteAllAssets()
     }
+    
+    let totalImported = 0
+    let totalSkipped = 0
+    let totalErrors = 0
+    const allErrorDetails = []
+    
+    // Process each chunk
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+      try {
+        // Get chunk data from Redis
+        const chunkData = await client.get(`import_data:${jobId}:chunk_${chunkIndex}`)
+        if (!chunkData) {
+          console.error(`Chunk ${chunkIndex} not found for job ${jobId}`)
+          continue
+        }
+        
+        const records = JSON.parse(chunkData)
+        console.log(`Processing chunk ${chunkIndex + 1}/${totalChunks} with ${records.length} records`)
+        
+        // Process records in smaller batches within the chunk
+        const batchSize = parseInt(options.batchSize) || 1000
+        let chunkImported = 0
+        let chunkSkipped = 0
+        let chunkErrors = 0
+        
+        for (let i = 0; i < records.length; i += batchSize) {
+          const batch = records.slice(i, i + batchSize)
+          
+          // Prepare batch data
+          const batchAssets = {}
+          const batchErrors = []
+          
+          for (let j = 0; j < batch.length; j++) {
+            const record = batch[j]
+            const lineNumber = (chunkIndex * chunkSize) + i + j + 2 // +2 for header row and 0-based index
+            
+            try {
+              const assetId = String(record.asset_id ?? '').trim()
+              const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+              const matchingScores = String(record.matching_scores ?? '')
+              
+              if (!assetId) {
+                chunkSkipped++
+                continue
+              }
+              
+              // Check for duplicates if skipDuplicates is enabled
+              if (options.skipDuplicates) {
+                const existing = await getAsset(assetId)
+                if (existing) {
+                  chunkSkipped++
+                  continue
+                }
+              }
+              
+              batchAssets[assetId] = {
+                asset_id: assetId,
+                predicted_asset_ids: predictedAssetIds,
+                matching_scores: matchingScores
+              }
+            
+            } catch (error) {
+              chunkErrors++
+              batchErrors.push({
+                line: lineNumber,
+                message: error.message
+              })
+            }
+          }
+          
+          // Save batch to Redis
+          if (Object.keys(batchAssets).length > 0) {
+            try {
+              const batchResult = await setAssetsBatch(batchAssets)
+              chunkImported += batchResult.successful
+              chunkErrors += batchResult.failed
+              allErrorDetails.push(...batchErrors)
+            } catch (batchError) {
+              console.error(`❌ Batch failed in chunk ${chunkIndex}:`, batchError.message)
+              chunkErrors += Object.keys(batchAssets).length
+              allErrorDetails.push({
+                line: (chunkIndex * chunkSize) + i + 1,
+                message: `Batch failed: ${batchError.message}`
+              })
+            }
+          }
+        }
+        
+        totalImported += chunkImported
+        totalSkipped += chunkSkipped
+        totalErrors += chunkErrors
+        
+        // Update job progress
+        const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100)
+        const jobUpdate = {
+          status: chunkIndex === totalChunks - 1 ? 'completed' : 'processing',
+          processed: (chunkIndex + 1) * chunkSize,
+          imported: totalImported,
+          skipped: totalSkipped,
+          errors: totalErrors,
+          errorDetails: allErrorDetails,
+          progress: progress,
+          updatedAt: new Date().toISOString()
+        }
+        
+        await client.set(`import_job:${jobId}`, JSON.stringify(jobUpdate))
+        
+        // Clean up chunk data
+        await client.del(`import_data:${jobId}:chunk_${chunkIndex}`)
+        
+        console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} completed: ${chunkImported} imported, ${chunkSkipped} skipped, ${chunkErrors} errors`)
+        
+      } catch (chunkError) {
+        console.error(`❌ Error processing chunk ${chunkIndex}:`, chunkError.message)
+        totalErrors += chunkSize // Assume all records in chunk failed
+      }
+    }
+    
+    console.log(`✅ Background processing completed for job ${jobId}: ${totalImported} imported, ${totalSkipped} skipped, ${totalErrors} errors`)
+    
+  } catch (error) {
+    console.error(`❌ Background processing failed for job ${jobId}:`, error.message)
+    
+    // Update job status to failed
+    try {
+      const client = await getRedisClient()
+      if (client) {
+        const jobUpdate = {
+          status: 'failed',
+          error: error.message,
+          updatedAt: new Date().toISOString()
+        }
+        await client.set(`import_job:${jobId}`, JSON.stringify(jobUpdate))
+      }
+    } catch (updateError) {
+      console.error('Failed to update job status:', updateError.message)
+    }
+  }
+}
+
+// Import status endpoint
+app.get('/api/import-status/:jobId', async (req, res) => {
+  try {
+    const jobId = req.params.jobId
+    console.log(`Checking import status for job: ${jobId}`)
+    
+    const client = await getRedisClient()
+    if (!client) {
+      return res.status(500).json({ error: 'Redis client not available' })
+    }
+    
+    const jobData = await client.get(`import_job:${jobId}`)
+    if (!jobData) {
+      return res.status(404).json({ error: 'Import job not found' })
+    }
+    
+    const job = JSON.parse(jobData)
+    res.json(job)
+    
+  } catch (error) {
+    console.error('Error checking import status:', error)
+    res.status(500).json({ error: error.message })
   }
 })
 
