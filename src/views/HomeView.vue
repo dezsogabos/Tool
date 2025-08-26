@@ -232,10 +232,15 @@ function handleSearch() {
       return r.json()
     })
     .then((data) => {
+      console.log(`🔍 API response data:`, data)
+      console.log(`🔍 data.reference:`, data?.reference)
+      console.log(`🔍 data.reference.fileId:`, data?.reference?.fileId)
+      
       // Cache the fetched data
       setCachedAsset(currentAssetId, data)
       
       referenceFileId.value = data?.reference?.fileId || ''
+      console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
       predicted.value = Array.isArray(data?.predicted) ? data.predicted : []
       
       // Load existing review status if asset was previously reviewed
@@ -1723,8 +1728,16 @@ const previewImageSource = computed(() => {
 
 // Computed properties for image URLs to prevent infinite loops
 const referenceImageUrl = computed(() => {
-  if (!referenceFileId.value) return ''
+  console.log(`🔍 referenceImageUrl computed - referenceFileId: "${referenceFileId.value}", offlineMode: ${offlineMode.value}, localImagePath: "${localImagePath.value}"`)
+  
+  if (!referenceFileId.value) {
+    console.log(`🔍 No referenceFileId, returning empty string`)
+    return ''
+  }
+  
   const cacheKey = `${referenceFileId.value}_${offlineMode.value ? 'offline' : 'online'}_${localImagePath.value || 'none'}`
+  console.log(`🔍 Cache key: "${cacheKey}"`)
+  
   const cached = imageUrlCache.value.get(cacheKey)
   if (cached) {
     console.log(`🖼️ Cache HIT for image: ${referenceFileId.value} (key: ${cacheKey})`)
@@ -1735,8 +1748,10 @@ const referenceImageUrl = computed(() => {
   let url = ''
   if (offlineMode.value && localImagePath.value) {
     url = `/api/local-images/${referenceFileId.value}?path=${encodeURIComponent(localImagePath.value)}`
+    console.log(`🔍 Generated LOCAL URL: ${url}`)
   } else {
     url = `/api/images/${referenceFileId.value}`
+    console.log(`🔍 Generated API URL: ${url}`)
   }
   
   // Cache the URL

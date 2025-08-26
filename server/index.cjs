@@ -264,20 +264,26 @@ function parseArrayField(value) {
 }
 
 async function getFileIdByAssetId(assetId) {
+  console.log(`🔍 getFileIdByAssetId called for assetId: ${assetId}`)
   const drive = getDrive()
   if (!drive) {
-    console.log(`Google Drive not available for asset ${assetId}`)
+    console.log(`❌ Google Drive not available for asset ${assetId}`)
     return null
   }
   
   try {
     const fileName = `${assetId}.jpg`
     const q = `name='${fileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
+    console.log(`🔍 Google Drive query: ${q}`)
     const res = await drive.files.list({ q, fields: 'files(id, name)' })
     const items = res.data.files || []
+    console.log(`🔍 Found ${items.length} files for asset ${assetId}`)
+    if (items.length > 0) {
+      console.log(`🔍 File ID: ${items[0].id}, Name: ${items[0].name}`)
+    }
     return items.length ? items[0].id : null
   } catch (error) {
-    console.error(`Error getting file ID for asset ${assetId}:`, error.message)
+    console.error(`❌ Error getting file ID for asset ${assetId}:`, error.message)
     return null
   }
 }
@@ -397,11 +403,13 @@ app.get('/api/assets/:assetId', async (req, res) => {
       }
     }
 
-    res.json({
+    const response = {
       assetId: searchId,
       reference: { fileId: referenceFileId },
       predicted,
-    })
+    }
+    console.log(`🔍 API response for asset ${searchId}:`, response)
+    res.json(response)
   } catch (e) {
     console.error(e)
     res.status(500).json({ error: e.message })
