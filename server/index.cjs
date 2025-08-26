@@ -212,13 +212,26 @@ async function setAsset(assetId, data) {
   if (client) {
     try {
       const key = `asset_${assetId}`
+      console.log(`🔍 Attempting to save key: ${key} with data:`, JSON.stringify(data).substring(0, 100) + '...')
+      
+      // Try using the set method
       await client.set(key, data)
       console.log(`✅ Asset ${assetId} saved to Edge Config`)
+      
+      // Verify the save worked by immediately reading it back
+      const verification = await client.get(key)
+      if (verification) {
+        console.log(`✅ Verification: Asset ${assetId} successfully saved and retrieved`)
+      } else {
+        console.warn(`⚠️ Warning: Asset ${assetId} was not found after saving`)
+      }
     } catch (error) {
-      console.warn(`Failed to save asset ${assetId} to Edge Config:`, error.message)
+      console.error(`❌ Failed to save asset ${assetId} to Edge Config:`, error.message)
+      console.error(`❌ Error details:`, error)
       fallbackStorage.set(assetId, data)
     }
   } else {
+    console.log(`🔍 Edge Config not available, using fallback storage for asset ${assetId}`)
     fallbackStorage.set(assetId, data)
   }
 }
@@ -231,7 +244,11 @@ async function getAllAssets() {
     try {
       // Get all keys that start with 'asset_'
       const allKeys = await client.getAll()
+      console.log(`🔍 getAll() returned ${Object.keys(allKeys).length} total keys:`, Object.keys(allKeys))
+      
       const assetKeys = Object.keys(allKeys).filter(key => key.startsWith('asset_'))
+      console.log(`🔍 Found ${assetKeys.length} asset keys:`, assetKeys)
+      
       const assets = {}
       
       for (const key of assetKeys) {
@@ -242,10 +259,12 @@ async function getAllAssets() {
       console.log(`🔍 Edge Config returned ${Object.keys(assets).length} assets`)
       return assets
     } catch (error) {
-      console.warn('Failed to get all assets from Edge Config:', error.message)
+      console.error('❌ Failed to get all assets from Edge Config:', error.message)
+      console.error('❌ Error details:', error)
       return Object.fromEntries(fallbackStorage)
     }
   } else {
+    console.log('🔍 Edge Config not available, using fallback storage')
     return Object.fromEntries(fallbackStorage)
   }
 }
@@ -1018,32 +1037,55 @@ app.get('/api/test-edge-config', async (_req, res) => {
     const testKey = 'test_key'
     const testData = { message: 'Hello from Edge Config', timestamp: new Date().toISOString() }
     
+    console.log('🧪 Testing Edge Config functionality...')
+    console.log('🧪 Edge Config client available:', !!client)
+    
     if (client) {
+      console.log('🧪 Attempting to save test data...')
+      
       // Test Edge Config
       await client.set(testKey, testData)
+      console.log('🧪 Test data saved, attempting to retrieve...')
+      
       const retrieved = await client.get(testKey)
+      console.log('🧪 Retrieved data:', retrieved)
+      
       await client.delete(testKey)
+      console.log('🧪 Test data cleaned up')
+      
+      const testPassed = JSON.stringify(retrieved) === JSON.stringify(testData)
+      console.log('🧪 Test passed:', testPassed)
       
       res.json({
         ok: true,
         edgeConfigAvailable: true,
-        testPassed: JSON.stringify(retrieved) === JSON.stringify(testData),
+        testPassed,
+        savedData: testData,
+        retrievedData: retrieved,
         message: 'Edge Config test completed'
       })
     } else {
+      console.log('🧪 Edge Config not available, testing fallback storage...')
+      
       // Test fallback storage
       fallbackStorage.set(testKey, testData)
       const retrieved = fallbackStorage.get(testKey)
       fallbackStorage.delete(testKey)
       
+      const fallbackTestPassed = JSON.stringify(retrieved) === JSON.stringify(testData)
+      console.log('🧪 Fallback test passed:', fallbackTestPassed)
+      
       res.json({
         ok: true,
         edgeConfigAvailable: false,
-        fallbackTestPassed: JSON.stringify(retrieved) === JSON.stringify(testData),
+        fallbackTestPassed,
+        savedData: testData,
+        retrievedData: retrieved,
         message: 'Fallback storage test completed'
       })
     }
   } catch (error) {
+    console.error('🧪 Edge Config test failed:', error)
     res.status(500).json({
       ok: false,
       error: error.message,
