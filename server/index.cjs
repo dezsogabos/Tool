@@ -889,6 +889,28 @@ app.get('/api/test', (_req, res) => {
   })
 })
 
+// Debug endpoint to list available assets in database
+app.get('/api/debug/assets', (req, res) => {
+  try {
+    initializeDatabaseIfNeeded()
+    const db = getDb()
+    
+    const rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT 20').all()
+    const assetIds = rows.map(r => r.asset_id)
+    
+    res.json({
+      totalAssets: assetIds.length,
+      sampleAssets: assetIds,
+      message: 'First 20 assets in database'
+    })
+  } catch (error) {
+    console.error('Debug assets error:', error)
+    res.status(500).json({
+      error: error.message
+    })
+  }
+})
+
 // Test endpoint for debugging specific assets
 app.get('/api/test-asset/:assetId', async (req, res) => {
   try {
