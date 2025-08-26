@@ -1241,6 +1241,16 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
     if (!client) {
       throw new Error('Turso client not available')
     }
+
+    // Immediately update job status to 'processing'
+    await client.execute({
+      sql: `UPDATE import_jobs SET 
+            status = ?, 
+            updated_at = CURRENT_TIMESTAMP 
+            WHERE job_id = ?`,
+      args: ['processing', jobId]
+    })
+    console.log(`📊 Job ${jobId} status updated to 'processing'`)
     
     // Clear existing data if requested
     if (options.clearExisting) {
@@ -1346,6 +1356,7 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
         // Update job progress
         const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100)
         const processed = Math.min((chunkIndex + 1) * chunkSize, totalRecords)
+        console.log(`📊 Progress calculation: chunkIndex=${chunkIndex}, totalChunks=${totalChunks}, progress=${progress}%, processed=${processed}/${totalRecords}`)
         
         await client.execute({
           sql: `UPDATE import_jobs SET 
@@ -1443,6 +1454,7 @@ app.get('/api/import-status/:jobId', async (req, res) => {
     }
     
     console.log(`📊 Job ${jobId} status:`, job)
+    console.log(`📊 Job ${jobId} returned status: ${job.status}, progress: ${job.progress}%, processed: ${job.processed}/${job.totalRecords}`)
     res.json(job)
     
   } catch (error) {
