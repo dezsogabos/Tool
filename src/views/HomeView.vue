@@ -50,6 +50,11 @@ const prefetchEnabled = ref(true) // Allow disabling prefetching if it causes is
 const cacheHits = ref(0)
 const cacheMisses = ref(0)
 
+// Debounce utility to prevent rapid successive calls
+let getImageUrlTimeout = null
+let getImageUrlCallCount = 0
+const MAX_GETIMAGEURL_CALLS = 1000 // Prevent infinite loops
+
 // Import functionality
 const selectedFile = ref(null)
 const isDragOver = ref(false)
@@ -152,15 +157,16 @@ function updateImageSource(fileId, source) {
 }
 
 function handleSearch() {
-  submitted.value = true
-  error.value = ''
-  referenceFileId.value = ''
-  predicted.value = []
-  selectedPredictedIds.value = []
-  rejectedPredictedIds.value = []
-  // Don't clear imageActualSources here - preserve pre-fetched source information
-  referenceImageSourceRef.value = 'api' // Reset reference image source
-  if (assetId.value.trim() === '') return
+  try {
+    submitted.value = true
+    error.value = ''
+    referenceFileId.value = ''
+    predicted.value = []
+    selectedPredictedIds.value = []
+    rejectedPredictedIds.value = []
+    // Don't clear imageActualSources here - preserve pre-fetched source information
+    referenceImageSourceRef.value = 'api' // Reset reference image source
+    if (assetId.value.trim() === '') return
   
   const currentAssetId = assetId.value.trim()
   
@@ -1348,6 +1354,26 @@ function getCacheStats() {
   return { hitRate, totalSize }
 }
 
+// Function to handle asset ID clicks with error handling
+function handleAssetIdClick(id) {
+  try {
+    console.log('Asset ID clicked:', id)
+    if (!id) {
+      console.warn('Invalid asset ID:', id)
+      return
+    }
+    
+    // Set the asset ID
+    assetId.value = id
+    
+    // Call handleSearch with error handling
+    handleSearch()
+  } catch (error) {
+    console.error('Error handling asset ID click:', error)
+    error.value = 'Failed to load asset. Please try again.'
+  }
+}
+
 function clearAllCaches() {
   assetCache.value.clear()
   imageUrlCache.value.clear()
@@ -1355,6 +1381,7 @@ function clearAllCaches() {
   imageActualSources.value = {} // Clear source tracking
   cacheHits.value = 0
   cacheMisses.value = 0
+  getImageUrlCallCount = 0 // Reset the call counter
   console.log('🧹 All caches and source tracking cleared')
 }
 
@@ -1620,44 +1647,48 @@ function loadOfflineSettings() {
 }
 
 function getImageUrl(fileId, assetId = null) {
-  console.log(`🔍 getImageUrl called for fileId: ${fileId}, assetId: ${assetId}`)
-  console.log(`🔍 offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
-  console.log(`🔍 offlineMode type: ${typeof offlineMode.value}, localImagePath type: ${typeof localImagePath.value}`)
+  // Prevent infinite loops
+  getImageUrlCallCount++
+  if (getImageUrlCallCount > MAX_GETIMAGEURL_CALLS) {
+    console.error('getImageUrl called too many times, preventing infinite loop')
+    return ''
+  }
+  
+  if (!fileId) {
+    console.warn('getImageUrl called with null/undefined fileId')
+    return ''
+  }
   
   // Check cache first
   const cachedUrl = getCachedImageUrl(fileId)
   if (cachedUrl) {
-    console.log(`🖼️ Using cached URL for fileId: ${fileId} - ${cachedUrl}`)
     return cachedUrl
+  }
+  
+  // Clear any existing timeout
+  if (getImageUrlTimeout) {
+    clearTimeout(getImageUrlTimeout)
   }
   
   let url
   if (offlineMode.value && localImagePath.value) {
     // For offline mode, use the provided assetId as the filename
-    // For reference images: assetId is the reference asset ID
-    // For predicted images: assetId is the predicted image's own ID (p.id)
     const filename = assetId || fileId
-    console.log(`DEBUG: In getImageUrl (offline mode). fileId: ${fileId}, assetId param: ${assetId}, calculated filename: ${filename}`);
     
     // Validate that we have a proper assetId for local file lookup
     if (!assetId) {
       console.warn(`⚠️ No assetId provided for local file lookup, falling back to API for fileId: ${fileId}`)
       url = `/api/images/${fileId}`
-      console.log(`🔍 Falling back to API URL: ${url}`)
     } else {
       url = `/api/local-images/${encodeURIComponent(filename)}?path=${encodeURIComponent(localImagePath.value)}`
-      console.log(`🔍 Returning local URL: ${url}`)
     }
   } else {
     // Fall back to online Google Drive API
     url = `/api/images/${fileId}`
-    console.log(`🔍 Returning API URL: ${url}`)
-    console.log(`🔍 Reason: offlineMode=${offlineMode.value}, localImagePath=${localImagePath.value}`)
   }
   
   // Cache the URL
   setCachedImageUrl(fileId, url)
-  console.log(`🔍 Cached URL for fileId ${fileId}: ${url}`)
   return url
 }
 
@@ -1666,47 +1697,21 @@ function getImageUrl(fileId, assetId = null) {
 // Computed properties for reactive image sources
 const referenceImageSource = computed(() => {
   const fileId = referenceFileId.value
+  if (!fileId) return 'api'
   
-  console.log(`🔍 referenceImageSource computed - fileId: ${fileId}, actualSource: ${imageActualSources.value[fileId]}`)
-  
-  // Check if we have an actual source for this file
-  if (fileId && imageActualSources.value[fileId]) {
-    console.log(`🔍 Returning actual source: ${imageActualSources.value[fileId]}`)
-    return imageActualSources.value[fileId]
-  }
-  
-  // If no actual source determined yet, show "Loading..." or default to API
-  console.log(`🔍 No actual source determined yet, defaulting to api`)
-  return 'api'
+  return imageActualSources.value[fileId] || 'api'
 })
 
 const predictedImageSources = computed(() => {
-  return predicted.value.map(p => {
-    // Access imageActualSources to make this computed property reactive to its changes
-    const actualSource = imageActualSources.value[p.fileId]
-    let source
-    if (actualSource) {
-      source = actualSource
-    } else {
-      // If no actual source determined yet, default to API
-      source = 'api'
-    }
-    return {
-      fileId: p.fileId,
-      source: source
-    }
-  })
+  return predicted.value.map(p => ({
+    fileId: p.fileId,
+    source: imageActualSources.value[p.fileId] || 'api'
+  }))
 })
 
 const previewImageSource = computed(() => {
   if (!previewImage.value) return 'api'
-  // Access imageActualSources to make this computed property reactive to its changes
-  const actualSource = imageActualSources.value[previewImage.value.fileId]
-  if (actualSource) {
-    return actualSource
-  }
-  // If no actual source determined yet, default to API
-  return 'api'
+  return imageActualSources.value[previewImage.value.fileId] || 'api'
 })
 
 function handleImageLoad(event, fileId, assetId = null) {
@@ -2025,7 +2030,7 @@ onMounted(() => {
                    'reviewed-accepted': getAssetReviewStatus(id) === 'accepted',
                    'reviewed-rejected': getAssetReviewStatus(id) === 'rejected'
                  }"
-                 @click="assetId = id; console.log('Asset ID clicked:', id); handleSearch()"
+                 @click="handleAssetIdClick(id)"
                >
                  {{ id }}
                </button>
