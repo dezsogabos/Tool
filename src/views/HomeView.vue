@@ -1724,20 +1724,74 @@ const previewImageSource = computed(() => {
 // Computed properties for image URLs to prevent infinite loops
 const referenceImageUrl = computed(() => {
   if (!referenceFileId.value) return ''
-  return getImageUrl(referenceFileId.value, assetId.value)
+  const cacheKey = `${referenceFileId.value}_${offlineMode.value ? 'offline' : 'online'}_${localImagePath.value || 'none'}`
+  const cached = imageUrlCache.value.get(cacheKey)
+  if (cached) {
+    console.log(`🖼️ Cache HIT for image: ${referenceFileId.value} (key: ${cacheKey})`)
+    return cached
+  }
+  
+  // Generate URL without calling getImageUrl to prevent infinite loop
+  let url = ''
+  if (offlineMode.value && localImagePath.value) {
+    url = `/api/local-images/${referenceFileId.value}?path=${encodeURIComponent(localImagePath.value)}`
+  } else {
+    url = `/api/images/${referenceFileId.value}`
+  }
+  
+  // Cache the URL
+  imageUrlCache.value.set(cacheKey, url)
+  console.log(`🖼️ Cache MISS for image: ${referenceFileId.value} (key: ${cacheKey}) - Generated: ${url}`)
+  return url
 })
 
 const predictedImageUrls = computed(() => {
-  return predicted.value.map(p => ({
-    id: p.id,
-    fileId: p.fileId,
-    url: p.fileId ? getImageUrl(p.fileId, p.id) : ''
-  }))
+  return predicted.value.map(p => {
+    if (!p.fileId) return { id: p.id, fileId: p.fileId, url: '' }
+    
+    const cacheKey = `${p.fileId}_${offlineMode.value ? 'offline' : 'online'}_${localImagePath.value || 'none'}`
+    const cached = imageUrlCache.value.get(cacheKey)
+    if (cached) {
+      console.log(`🖼️ Cache HIT for image: ${p.fileId} (key: ${cacheKey})`)
+      return { id: p.id, fileId: p.fileId, url: cached }
+    }
+    
+    // Generate URL without calling getImageUrl to prevent infinite loop
+    let url = ''
+    if (offlineMode.value && localImagePath.value) {
+      url = `/api/local-images/${p.fileId}?path=${encodeURIComponent(localImagePath.value)}`
+    } else {
+      url = `/api/images/${p.fileId}`
+    }
+    
+    // Cache the URL
+    imageUrlCache.value.set(cacheKey, url)
+    console.log(`🖼️ Cache MISS for image: ${p.fileId} (key: ${cacheKey}) - Generated: ${url}`)
+    return { id: p.id, fileId: p.fileId, url }
+  })
 })
 
 const previewImageUrl = computed(() => {
   if (!previewImage.value?.fileId) return ''
-  return getImageUrl(previewImage.value.fileId, assetId.value)
+  const cacheKey = `${previewImage.value.fileId}_${offlineMode.value ? 'offline' : 'online'}_${localImagePath.value || 'none'}`
+  const cached = imageUrlCache.value.get(cacheKey)
+  if (cached) {
+    console.log(`🖼️ Cache HIT for image: ${previewImage.value.fileId} (key: ${cacheKey})`)
+    return cached
+  }
+  
+  // Generate URL without calling getImageUrl to prevent infinite loop
+  let url = ''
+  if (offlineMode.value && localImagePath.value) {
+    url = `/api/local-images/${previewImage.value.fileId}?path=${encodeURIComponent(localImagePath.value)}`
+  } else {
+    url = `/api/images/${previewImage.value.fileId}`
+  }
+  
+  // Cache the URL
+  imageUrlCache.value.set(cacheKey, url)
+  console.log(`🖼️ Cache MISS for image: ${previewImage.value.fileId} (key: ${cacheKey}) - Generated: ${url}`)
+  return url
 })
 
 function handleImageLoad(event, fileId, assetId = null) {
