@@ -329,7 +329,7 @@ async function getFileIdByAssetId(assetId) {
   }
 }
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
   try {
     console.log('Health check requested')
     
@@ -367,25 +367,25 @@ app.get('/api/health', (_req, res) => {
         driveTestResult = `error: ${testError.message}`
         console.log('Drive test error:', testError.message)
       }
-         }
-     
-     res.json({ 
-       ok: true, 
-       timestamp: new Date().toISOString(),
-       env: {
-         NODE_ENV: process.env.NODE_ENV,
-         PORT: process.env.PORT,
-         app_usr_set: !!process.env.app_usr,
-         app_auth_set: !!process.env.app_auth,
-         ALL_DATASET_FOLDER_ID: process.env.ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET',
-         GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET',
-         api_credentials_length: apiCredentialsStr.length,
-         API_CREDENTIALS_length: (process.env.API_CREDENTIALS || '').length
-       },
-       googleDrive: driveStatus,
-       driveTest: driveTestResult,
-       message: 'Server is running'
-     })
+    }
+    
+    res.json({ 
+      ok: true, 
+      timestamp: new Date().toISOString(),
+      env: {
+        NODE_ENV: process.env.NODE_ENV,
+        PORT: process.env.PORT,
+        app_usr_set: !!process.env.app_usr,
+        app_auth_set: !!process.env.app_auth,
+        ALL_DATASET_FOLDER_ID: process.env.ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET',
+        GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET',
+        api_credentials_length: apiCredentialsStr.length,
+        API_CREDENTIALS_length: (process.env.API_CREDENTIALS || '').length
+      },
+      googleDrive: driveStatus,
+      driveTest: driveTestResult,
+      message: 'Server is running'
+    })
   } catch (error) {
     console.error('Health check error:', error)
     res.status(500).json({
@@ -879,6 +879,15 @@ function initializeDatabaseIfNeeded() {
     dbInitialized = true
   }
 }
+
+// Simple test endpoint
+app.get('/api/test', (_req, res) => {
+  res.json({ 
+    ok: true, 
+    message: 'Server is working',
+    timestamp: new Date().toISOString()
+  })
+})
 
 // Test endpoint for debugging specific assets
 app.get('/api/test-asset/:assetId', async (req, res) => {
