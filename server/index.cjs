@@ -959,6 +959,16 @@ app.post('/api/import-csv', async (req, res) => {
     }
     
     console.log('Import completed:', result)
+    
+    // Debug: Verify that assets were actually saved
+    console.log('🔍 Debug: Verifying saved assets...')
+    const verificationCount = await getAssetCount()
+    console.log(`🔍 Debug: Asset count after import: ${verificationCount}`)
+    
+    if (verificationCount === 0 && imported > 0) {
+      console.log('⚠️ WARNING: Assets were imported but count is 0! This indicates a persistence issue.')
+    }
+    
     sendProgress(100, 'Import completed successfully!')
     sendResult(result)
     
@@ -1037,6 +1047,53 @@ app.get('/api/test-edge-config', async (_req, res) => {
       ok: false,
       error: error.message,
       message: 'Edge Config test failed'
+    })
+  }
+})
+
+// Test asset storage specifically
+app.get('/api/test-asset-storage', async (_req, res) => {
+  try {
+    const testAssetId = 'test_asset_123'
+    const testAssetData = {
+      asset_id: testAssetId,
+      predicted_asset_ids: '[123, 456, 789]',
+      matching_scores: '[0.95, 0.87, 0.76]'
+    }
+    
+    console.log('🧪 Testing asset storage...')
+    
+    // Save test asset
+    await setAsset(testAssetId, testAssetData)
+    console.log('🧪 Test asset saved')
+    
+    // Retrieve test asset
+    const retrieved = await getAsset(testAssetId)
+    console.log('🧪 Test asset retrieved:', retrieved ? 'SUCCESS' : 'FAILED')
+    
+    // Get total count
+    const count = await getAssetCount()
+    console.log('🧪 Total asset count:', count)
+    
+    // Clean up
+    const client = getEdgeConfig()
+    if (client) {
+      await client.delete(`asset_${testAssetId}`)
+    } else {
+      fallbackStorage.delete(testAssetId)
+    }
+    
+    res.json({
+      ok: true,
+      saveSuccess: !!retrieved,
+      assetCount: count,
+      message: 'Asset storage test completed'
+    })
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+      message: 'Asset storage test failed'
     })
   }
 })
