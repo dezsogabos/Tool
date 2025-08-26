@@ -268,7 +268,9 @@ function handleSearch() {
       console.log(`🔍 Raw data.reference.fileId:`, data?.reference?.fileId)
       console.log(`🔍 Raw data.reference.fileId type:`, typeof data?.reference?.fileId)
       console.log(`🔍 Raw data.reference.fileId === null:`, data?.reference?.fileId === null)
+      console.log(`🔍 About to assign: data?.reference?.fileId =`, data?.reference?.fileId)
       referenceFileId.value = data?.reference?.fileId
+      console.log(`🔍 Immediately after assignment:`, referenceFileId.value)
       console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
       console.log(`🔍 referenceFileId.value type: ${typeof referenceFileId.value}`)
       console.log(`🔍 referenceFileId.value === null: ${referenceFileId.value === null}`)
