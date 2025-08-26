@@ -2296,7 +2296,7 @@ async function monitorImportProgress(jobId) {
   const maxAttempts = 300 // 5 minutes with 1-second intervals
   let attempts = 0
   
-  const checkProgress = async () => {
+  while (attempts < maxAttempts) {
     try {
       const response = await fetch(`/api/import-status/${jobId}`)
       if (!response.ok) {
@@ -2332,7 +2332,7 @@ async function monitorImportProgress(jobId) {
           console.log('🔄 Import successful, refreshing asset review tab...')
           await refreshAssetReviewAfterImport()
         }
-        return true
+        return
         
       } else if (jobStatus.status === 'failed') {
         console.error('❌ Import failed:', jobStatus.error)
@@ -2345,7 +2345,7 @@ async function monitorImportProgress(jobId) {
           status: 'failed'
         }
         progressMessage.value = `Import failed: ${jobStatus.error || 'Unknown error'}`
-        return true
+        return
         
       } else if (jobStatus.status === 'processing') {
         // Continue monitoring
@@ -2362,12 +2362,11 @@ async function monitorImportProgress(jobId) {
             message: 'Import monitoring timed out. Check status manually.'
           }
           progressMessage.value = 'Import monitoring timed out. Check status manually.'
-          return true
+          return
         }
         
-        // Continue monitoring after 1 second
-        setTimeout(checkProgress, 1000)
-        return false
+        // Wait 1 second before next check
+        await new Promise(resolve => setTimeout(resolve, 1000))
         
       }
       
@@ -2385,17 +2384,13 @@ async function monitorImportProgress(jobId) {
           status: 'monitoring_failed'
         }
         progressMessage.value = 'Failed to monitor import progress'
-        return true
+        return
       }
       
-      // Retry after 2 seconds
-      setTimeout(checkProgress, 2000)
-      return false
+      // Wait 2 seconds before retry
+      await new Promise(resolve => setTimeout(resolve, 2000))
     }
   }
-  
-  // Start monitoring
-  await checkProgress()
 }
 
 async function refreshDbStatus() {
