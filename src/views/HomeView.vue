@@ -320,7 +320,12 @@ function handleSearch() {
 }
 
 const showEmptyInfo = computed(() => submitted.value && assetId.value.trim() === '')
-const showNoMatches = computed(() => submitted.value && !loading.value && !error.value && assetId.value.trim() !== '' && !referenceFileId.value && predicted.value.length === 0)
+const hasAssetBeenFound = computed(() => {
+  // An asset is considered "found" if we have either a reference image OR predicted images
+  // This handles cases where an asset exists in the database but has no reference image
+  return (referenceFileId.value && referenceFileId.value !== 'null' && referenceFileId.value !== 'undefined') || predicted.value.length > 0
+})
+const showNoMatches = computed(() => submitted.value && !loading.value && !error.value && assetId.value.trim() !== '' && !hasAssetBeenFound.value)
 
 function isPredSelected(id) {
   return selectedPredictedIds.value.includes(String(id))
@@ -2257,7 +2262,7 @@ onMounted(() => {
          <p v-if="loading" class="info">Loading...</p>
          <p v-if="isPrefetching" class="info">🚀 Pre-fetching next assets...</p>
 
-                                                                               <div v-if="!loading && !error && (referenceFileId || predicted.length)" class="results">
+                                                                               <div v-if="!loading && !error && hasAssetBeenFound" class="results">
                                           <div class="grid">
                                             <div class="col ref" ref="referenceImageRef">
                                               <h3>Reference Image</h3>
@@ -2292,7 +2297,7 @@ onMounted(() => {
                                                   </div>
                                                 </div>
                                               </div>
-                                                                                                                                           <div class="navigation-controls" v-if="referenceFileId">
+                                                                                                                                           <div class="navigation-controls" v-if="hasAssetBeenFound">
                                                 <button class="nav-btn prev" @click="goToPreviousAsset" :disabled="!canGoToPrevious">
                                                   <span class="nav-symbol">←</span>
                                                   <span class="nav-text">Previous</span>
@@ -2308,7 +2313,7 @@ onMounted(() => {
                                               </div>
                                               
                                               <!-- Prefetch Status -->
-                                              <div class="prefetch-status" v-if="referenceFileId && isPrefetching">
+                                              <div class="prefetch-status" v-if="hasAssetBeenFound && isPrefetching">
                                                 <div class="prefetch-indicator">
                                                   <div class="prefetch-spinner"></div>
                                                   <span class="prefetch-text">Preloading next assets...</span>
@@ -2319,7 +2324,7 @@ onMounted(() => {
                                               </div>
                                               
                                               <!-- Keyboard Shortcuts Help -->
-                                              <div class="keyboard-shortcuts" v-if="referenceFileId">
+                                              <div class="keyboard-shortcuts" v-if="hasAssetBeenFound">
                                                 <div class="shortcuts-header">
                                                   <span class="shortcuts-icon">⌨️</span>
                                                   <span class="shortcuts-title">Keyboard Shortcuts</span>
@@ -2346,7 +2351,7 @@ onMounted(() => {
                                                   </div>
                                                 </div>
                                               </div>
-                                               <div class="clear-review-section" v-if="referenceFileId">
+                                               <div class="clear-review-section" v-if="hasAssetBeenFound">
                                                  <button class="clear-review-btn" @click="handleClearReview">
                                                    <span class="clear-symbol">🗑️</span>
                                                    <span class="clear-text">Clear Review</span>
