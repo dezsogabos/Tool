@@ -163,152 +163,25 @@ function loadDataset() {
   dataset = records
 }
 
-// Edge Config persistence system for serverless environments
-// Provides reliable, persistent key-value storage
+// Simple in-memory database for development and fallback
+// This will persist data across function invocations in the same instance
+let assetDatabase = new Map()
 
-// Edge Config client setup
-let edgeConfigClient = null
-function getEdgeConfig() {
-  if (!edgeConfigClient) {
-    try {
-      edgeConfigClient = createClient(process.env.EDGE_CONFIG)
-      console.log('✅ Edge Config client initialized')
-    } catch (error) {
-      console.warn('⚠️ Edge Config not available, using fallback storage:', error.message)
-      edgeConfigClient = null
-    }
-  }
-  return edgeConfigClient
-}
-
-// Fallback in-memory storage for local development
-// Use a global variable that persists across function invocations
-if (!global.fallbackStorage) {
-  global.fallbackStorage = new Map()
-}
-let fallbackStorage = global.fallbackStorage
-
-// Asset storage functions
-async function getAsset(assetId) {
-  const client = getEdgeConfig()
-  if (client) {
-    try {
-      const key = `asset_${assetId}`
-      const data = await client.get(key)
-      return data || null
-    } catch (error) {
-      console.warn(`Failed to get asset ${assetId} from Edge Config:`, error.message)
-      return fallbackStorage.get(assetId) || null
-    }
-  } else {
-    return fallbackStorage.get(assetId) || null
-  }
-}
-
-async function setAsset(assetId, data) {
-  const client = getEdgeConfig()
-  console.log(`🔍 setAsset called for ${assetId} - Edge Config available:`, !!client)
-  
-  if (client) {
-    try {
-      const key = `asset_${assetId}`
-      await client.set(key, data)
-      console.log(`✅ Asset ${assetId} saved to Edge Config`)
-    } catch (error) {
-      console.warn(`Failed to save asset ${assetId} to Edge Config:`, error.message)
-      fallbackStorage.set(assetId, data)
-      console.log(`✅ Asset ${assetId} saved to fallback storage`)
-    }
-  } else {
-    fallbackStorage.set(assetId, data)
-    console.log(`✅ Asset ${assetId} saved to fallback storage (Edge Config not available)`)
-  }
-}
-
-async function getAllAssets() {
-  const client = getEdgeConfig()
-  console.log('🔍 getAllAssets called - Edge Config available:', !!client)
-  
-  if (client) {
-    try {
-      // Get all keys that start with 'asset_'
-      const allKeys = await client.getAll()
-      const assetKeys = Object.keys(allKeys).filter(key => key.startsWith('asset_'))
-      const assets = {}
-      
-      for (const key of assetKeys) {
-        const assetId = key.replace('asset_', '')
-        assets[assetId] = allKeys[key]
-      }
-      
-      console.log(`🔍 Edge Config returned ${Object.keys(assets).length} assets`)
-      return assets
-    } catch (error) {
-      console.warn('Failed to get all assets from Edge Config:', error.message)
-      const fallbackAssets = Object.fromEntries(fallbackStorage)
-      console.log(`🔍 Using fallback storage with ${Object.keys(fallbackAssets).length} assets`)
-      return fallbackAssets
-    }
-  } else {
-    const fallbackAssets = Object.fromEntries(fallbackStorage)
-    console.log(`🔍 Edge Config not available, using fallback storage with ${Object.keys(fallbackAssets).length} assets`)
-    return fallbackAssets
-  }
-}
-
-async function deleteAllAssets() {
-  const client = getEdgeConfig()
-  if (client) {
-    try {
-      const allKeys = await client.getAll()
-      const assetKeys = Object.keys(allKeys).filter(key => key.startsWith('asset_'))
-      
-      for (const key of assetKeys) {
-        await client.delete(key)
-      }
-      
-      console.log(`✅ Deleted ${assetKeys.length} assets from Edge Config`)
-    } catch (error) {
-      console.warn('Failed to delete assets from Edge Config:', error.message)
-      fallbackStorage.clear()
-    }
-  } else {
-    fallbackStorage.clear()
-  }
-}
-
-async function getAssetCount() {
-  const client = getEdgeConfig()
-  if (client) {
-    try {
-      const allKeys = await client.getAll()
-      const assetKeys = Object.keys(allKeys).filter(key => key.startsWith('asset_'))
-      return assetKeys.length
-    } catch (error) {
-      console.warn('Failed to get asset count from Edge Config:', error.message)
-      return fallbackStorage.size
-    }
-  } else {
-    return fallbackStorage.size
-  }
-}
-
-// Initialize with sample data if empty (local development only)
-async function initializeWithSampleData() {
+// Initialize database with sample data if empty (local development only)
+function initializeDatabase() {
   if (process.env.NODE_ENV === 'production') {
-    console.log('Production environment: No sample data loaded. Users should import CSV data.')
+    console.log('Production environment: Database will be populated by CSV imports')
     return
   }
   
-  const count = await getAssetCount()
-  if (count > 0) {
-    console.log(`Database already has ${count} assets, skipping sample data`)
+  if (assetDatabase.size > 0) {
+    console.log(`Database already has ${assetDatabase.size} assets`)
     return
   }
   
   // Load CSV and import (local development)
   if (!CSV_PATH || !fs.existsSync(CSV_PATH)) {
-    console.log('CSV not found; assets table remains empty.')
+    console.log('CSV not found; database remains empty.')
     return
   }
   
@@ -321,7 +194,7 @@ async function initializeWithSampleData() {
   for (const record of records) {
     const assetId = String(record.asset_id ?? '').trim()
     if (assetId) {
-      await setAsset(assetId, {
+      assetDatabase.set(assetId, {
         asset_id: assetId,
         predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
         matching_scores: String(record.matching_scores ?? '')
@@ -332,6 +205,37 @@ async function initializeWithSampleData() {
   
   console.log(`✅ Imported ${imported} records from CSV`)
 }
+
+// Asset storage functions
+async function getAsset(assetId) {
+  return assetDatabase.get(assetId) || null
+}
+
+async function setAsset(assetId, data) {
+  console.log(`🔍 setAsset called for ${assetId}`)
+  assetDatabase.set(assetId, data)
+  console.log(`✅ Asset ${assetId} saved to database`)
+}
+
+async function getAllAssets() {
+  console.log('🔍 getAllAssets called')
+  const assets = Object.fromEntries(assetDatabase)
+  console.log(`🔍 Database returned ${Object.keys(assets).length} assets`)
+  return assets
+}
+
+async function deleteAllAssets() {
+  console.log('🔍 deleteAllAssets called')
+  assetDatabase.clear()
+  console.log(`✅ Cleared all assets from database`)
+}
+
+async function getAssetCount() {
+  return assetDatabase.size
+}
+
+// Initialize database on startup
+initializeDatabase()
 
 function parseArrayField(value) {
   if (Array.isArray(value)) return value
@@ -834,7 +738,7 @@ app.get('/api/db-status', async (req, res) => {
     res.json({
       totalRecords,
       lastUpdated,
-      databaseType: 'edge-config'
+      databaseType: 'in-memory'
     })
   } catch (e) {
     console.error('Error getting database status:', e)
@@ -993,65 +897,17 @@ app.post('/api/import-csv', async (req, res) => {
   }
 })
 
-// Initialize Edge Config with sample data if needed
-async function initializeDatabaseIfNeeded() {
-  console.log('Ensuring Edge Config is initialized...')
-  await initializeWithSampleData()
-}
-
 // Simple test endpoint
 app.get('/api/test', (_req, res) => {
   res.json({ 
     ok: true, 
     message: 'Server is working',
     timestamp: new Date().toISOString(),
-    edgeConfigEnv: process.env.EDGE_CONFIG ? 'SET' : 'NOT SET'
+    databaseType: 'in-memory'
   })
 })
 
-// Test Edge Config functionality
-app.get('/api/test-edge-config', async (_req, res) => {
-  try {
-    const client = getEdgeConfig()
-    const testKey = 'test_key'
-    const testData = { message: 'Hello from Edge Config', timestamp: new Date().toISOString() }
-    
-    if (client) {
-      // Test Edge Config
-      await client.set(testKey, testData)
-      const retrieved = await client.get(testKey)
-      await client.delete(testKey)
-      
-      res.json({
-        ok: true,
-        edgeConfigAvailable: true,
-        testPassed: JSON.stringify(retrieved) === JSON.stringify(testData),
-        message: 'Edge Config test completed'
-      })
-    } else {
-      // Test fallback storage
-      fallbackStorage.set(testKey, testData)
-      const retrieved = fallbackStorage.get(testKey)
-      fallbackStorage.delete(testKey)
-      
-      res.json({
-        ok: true,
-        edgeConfigAvailable: false,
-        fallbackTestPassed: JSON.stringify(retrieved) === JSON.stringify(testData),
-        fallbackStorageSize: fallbackStorage.size,
-        message: 'Fallback storage test completed'
-      })
-    }
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      error: error.message,
-      message: 'Edge Config test failed'
-    })
-  }
-})
-
-// Test asset storage specifically
+// Test asset storage
 app.get('/api/test-asset-storage', async (_req, res) => {
   try {
     const testAssetId = 'test_asset_123'
@@ -1076,12 +932,7 @@ app.get('/api/test-asset-storage', async (_req, res) => {
     console.log('🧪 Total asset count:', count)
     
     // Clean up
-    const client = getEdgeConfig()
-    if (client) {
-      await client.delete(`asset_${testAssetId}`)
-    } else {
-      fallbackStorage.delete(testAssetId)
-    }
+    assetDatabase.delete(testAssetId)
     
     res.json({
       ok: true,
@@ -1120,7 +971,7 @@ app.get('/api/debug/assets', async (req, res) => {
     res.json({
       totalAssets: totalCount,
       sampleAssets: assetIds,
-      message: `Edge Config has ${totalCount} total assets, showing first 20`
+      message: `Database has ${totalCount} total assets, showing first 20`
     })
   } catch (error) {
     console.error('Debug assets error:', error)
@@ -1136,23 +987,23 @@ app.get('/api/debug/asset/:assetId', async (req, res) => {
     const assetId = req.params.assetId
     console.log(`🔍 Debug request for asset: ${assetId}`)
     
-    // Get asset data from Edge Config
+    // Get asset data from database
     const assetData = await getAsset(assetId)
     
     if (assetData) {
-      console.log(`🔍 Found asset ${assetId} in Edge Config:`, assetData)
+      console.log(`🔍 Found asset ${assetId} in database:`, assetData)
       res.json({
         assetId,
         found: true,
         databaseData: assetData,
-        message: 'Asset found in Edge Config'
+        message: 'Asset found in database'
       })
     } else {
-      console.log(`🔍 Asset ${assetId} not found in Edge Config`)
+      console.log(`🔍 Asset ${assetId} not found in database`)
       res.json({
         assetId,
         found: false,
-        message: 'Asset not found in Edge Config'
+        message: 'Asset not found in database'
       })
     }
   } catch (error) {
@@ -1188,15 +1039,11 @@ app.get('/api/test-asset/:assetId', async (req, res) => {
 app.get('/api/debug/cache', async (req, res) => {
   try {
     const totalCount = await getAssetCount()
-    const client = getEdgeConfig()
-    const fallbackSize = fallbackStorage.size
     
     res.json({
-      databaseType: 'edge-config',
+      databaseType: 'in-memory',
       totalAssets: totalCount,
-      edgeConfigAvailable: !!client,
-      fallbackStorageSize: fallbackSize,
-      message: `Edge Config has ${totalCount} assets (fallback: ${fallbackSize})`
+      message: `Database has ${totalCount} assets`
     })
   } catch (error) {
     console.error('Debug database error:', error)
@@ -1224,7 +1071,7 @@ app.get('/api/export-database', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="database-backup-${new Date().toISOString().split('T')[0]}.json"`)
     res.json(exportData)
     
-    console.log(`✅ Exported ${rows.length} records from Edge Config`)
+    console.log(`✅ Exported ${rows.length} records from database`)
   } catch (error) {
     console.error('Database export error:', error)
     res.status(500).json({
