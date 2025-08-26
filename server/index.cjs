@@ -163,9 +163,12 @@ function loadDataset() {
   dataset = records
 }
 
-// Simple in-memory database for development and fallback
-// This will persist data across function invocations in the same instance
-let assetDatabase = new Map()
+// Global in-memory database that persists across serverless function invocations
+// Use global variable to maintain state between function calls
+if (!global.assetDatabase) {
+  global.assetDatabase = new Map()
+}
+let assetDatabase = global.assetDatabase
 
 // Initialize database with sample data if empty (local development only)
 function initializeDatabase() {
@@ -462,11 +465,11 @@ app.get('/api/assets/:assetId', async (req, res) => {
     const searchId = String(req.params.assetId).trim()
     if (!searchId) return res.status(400).json({ error: 'assetId required' })
 
-    // Get asset from Edge Config
-    const assetData = await getAsset(searchId)
-    
-    if (!assetData) {
-      console.log(`🔍 Asset ${searchId} not found in Edge Config`)
+         // Get asset from in-memory database
+     const assetData = await getAsset(searchId)
+     
+     if (!assetData) {
+       console.log(`🔍 Asset ${searchId} not found in database`)
       return res.json({ 
         assetId: searchId, 
         reference: { fileId: null },
@@ -647,18 +650,18 @@ app.get('/api/assets-page', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1)
     const offset = (page - 1) * pageSize
     
-    console.log('Querying Edge Config for page', page, 'size', pageSize)
+         console.log('Querying in-memory database for page', page, 'size', pageSize)
     
-    // Get all assets from Edge Config
-    const allAssets = await getAllAssets()
-    const assetIds = Object.keys(allAssets).sort((a, b) => {
-      const aNum = parseInt(a) || 0
-      const bNum = parseInt(b) || 0
-      return aNum - bNum
-    })
-    
-    const total = assetIds.length
-    console.log('Total assets in Edge Config:', total)
+         // Get all assets from in-memory database
+     const allAssets = await getAllAssets()
+     const assetIds = Object.keys(allAssets).sort((a, b) => {
+       const aNum = parseInt(a) || 0
+       const bNum = parseInt(b) || 0
+       return aNum - bNum
+     })
+     
+     const total = assetIds.length
+     console.log('Total assets in database:', total)
     
     const pageIds = assetIds.slice(offset, offset + pageSize)
     console.log('Retrieved', pageIds.length, 'asset IDs for page')
@@ -686,34 +689,34 @@ app.post('/api/assets-page-filtered', async (req, res) => {
     const filter = req.body.filter || 'all'
     const reviewedAssets = req.body.reviewedAssets || {}
     
-    console.log('Querying Edge Config for page', page, 'size', pageSize, 'filter:', filter)
+         console.log('Querying in-memory database for page', page, 'size', pageSize, 'filter:', filter)
     
-    // Get all asset IDs from Edge Config
-    const allAssets = await getAllAssets()
-    const allIds = Object.keys(allAssets).sort((a, b) => {
-      const aNum = parseInt(a) || 0
-      const bNum = parseInt(b) || 0
-      return aNum - bNum
-    })
-    
-    // Filter based on review status
-    let filteredIds = allIds
-    if (filter === 'accepted') {
-      filteredIds = allIds.filter(id => reviewedAssets[id]?.status === 'accepted')
-    } else if (filter === 'rejected') {
-      filteredIds = allIds.filter(id => reviewedAssets[id]?.status === 'rejected')
-    } else if (filter === 'not-reviewed') {
-      filteredIds = allIds.filter(id => !reviewedAssets[id])
-    }
-    // 'all' filter returns all IDs
-    
-    const total = filteredIds.length
-    const overallTotal = allIds.length
-    const pageCount = total ? Math.ceil(total / pageSize) : 0
-    const offset = (page - 1) * pageSize
-    const pageIds = filteredIds.slice(offset, offset + pageSize)
-    
-    console.log('Total assets in Edge Config:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
+         // Get all asset IDs from in-memory database
+     const allAssets = await getAllAssets()
+     const allIds = Object.keys(allAssets).sort((a, b) => {
+       const aNum = parseInt(a) || 0
+       const bNum = parseInt(b) || 0
+       return aNum - bNum
+     })
+     
+     // Filter based on review status
+     let filteredIds = allIds
+     if (filter === 'accepted') {
+       filteredIds = allIds.filter(id => reviewedAssets[id]?.status === 'accepted')
+     } else if (filter === 'rejected') {
+       filteredIds = allIds.filter(id => reviewedAssets[id]?.status === 'rejected')
+     } else if (filter === 'not-reviewed') {
+       filteredIds = allIds.filter(id => !reviewedAssets[id])
+     }
+     // 'all' filter returns all IDs
+     
+     const total = filteredIds.length
+     const overallTotal = allIds.length
+     const pageCount = total ? Math.ceil(total / pageSize) : 0
+     const offset = (page - 1) * pageSize
+     const pageIds = filteredIds.slice(offset, offset + pageSize)
+     
+     console.log('Total assets in database:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
     
     res.json({
       page,
@@ -826,21 +829,26 @@ app.post('/api/import-csv', async (req, res) => {
             continue
           }
           
-          // Check for duplicates if skipDuplicates is enabled
-          if (options.skipDuplicates) {
-            const existing = await getAsset(assetId)
-            if (existing) {
-              skipped++
-              continue
-            }
-          }
-          
-          await setAsset(assetId, {
-            asset_id: assetId,
-            predicted_asset_ids: predictedAssetIds,
-            matching_scores: matchingScores
-          })
-          imported++
+                     // Check for duplicates if skipDuplicates is enabled
+           if (options.skipDuplicates) {
+             const existing = await getAsset(assetId)
+             if (existing) {
+               skipped++
+               continue
+             }
+           }
+           
+           await setAsset(assetId, {
+             asset_id: assetId,
+             predicted_asset_ids: predictedAssetIds,
+             matching_scores: matchingScores
+           })
+           imported++
+           
+           // Debug: Log every 100th import to track progress
+           if (imported % 100 === 0) {
+             console.log(`📊 Imported ${imported} assets so far...`)
+           }
         
         } catch (error) {
           errors++
