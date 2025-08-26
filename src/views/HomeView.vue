@@ -1,0 +1,4876 @@
+<script setup>
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useAuthStore } from '../stores/auth'
+const auth = useAuthStore()
+
+const assetId = ref('')
+const referenceImageRef = ref(null)
+const submitted = ref(false)
+const loading = ref(false)
+const error = ref('')
+const referenceFileId = ref('')
+const predicted = ref([])
+const referenceDecision = ref('') // 'accepted' | 'rejected' | ''
+const selectedPredictedIds = ref([])
+const rejectedPredictedIds = ref([])
+const page = ref(1)
+const pageCount = ref(0)
+const ids = ref([])
+const reviewedAssets = ref({}) // Store reviewed assets: { assetId: { status: 'accepted'|'rejected', predictedIds: [] } }
+const activeTab = ref('review') // 'review' | 'export' | 'settings' | 'analytics' | 'about'
+const totalAssets = ref(0) // Total number of assets in the database
+const overallTotalAssets = ref(0) // Total number of assets in the database (unfiltered)
+const pageSize = ref(20) // Number of assets per page
+const exportPreviewPage = ref(1) // Current page for export preview
+const exportPreviewPageSize = ref(10) // Number of items per page in export preview
+const exportFilter = ref('all') // Filter for export preview: 'all', 'accepted', 'rejected'
+const assetFilter = ref('all') // Filter for asset review: 'all', 'accepted', 'rejected', 'not-reviewed'
+const darkMode = ref(false) // Dark mode toggle
+const previewImage = ref(null) // Currently previewed image
+const offlineMode = ref(false) // Offline mode toggle
+const localImagePath = ref('') // Local drive path for images
+const imageActualSources = ref({}) // Track actual source of each image: { fileId: 'local' | 'api' }
+const referenceImageSourceRef = ref('api') // Direct ref for reference image source
+
+// Cache system for improved performance
+const assetCache = ref(new Map()) // Cache for asset data: { assetId: { reference, predicted, timestamp } }
+const imageUrlCache = ref(new Map()) // Cache for image URLs: { fileId: { url, timestamp } }
+const CACHE_DURATION = 5 * 60 * 1000 // 5 minutes cache duration
+const MAX_CACHE_SIZE = 100 // Maximum number of cached items
+
+// Pre-fetching system for instant navigation
+const prefetchQueue = ref([]) // Queue of asset IDs to pre-fetch
+const isPrefetching = ref(false) // Flag to prevent multiple concurrent pre-fetch operations
+const PREFETCH_COUNT = 3 // Number of assets to pre-fetch ahead
+const prefetchedAssets = ref(new Set()) // Track which assets have been pre-fetched
+const prefetchProgress = ref(0) // Track prefetch progress (0-100)
+
+// Cache statistics tracking
+const cacheHits = ref(0)
+const cacheMisses = ref(0)
+
+// Cache management functions
+function isCacheValid(timestamp) {
+  return Date.now() - timestamp < CACHE_DURATION
+}
+
+function cleanupCache(cache) {
+  const now = Date.now()
+  for (const [key, value] of cache.entries()) {
+    if (!isCacheValid(value.timestamp)) {
+      cache.delete(key)
+    }
+  }
+  
+  // If cache is still too large, remove oldest entries
+  if (cache.size > MAX_CACHE_SIZE) {
+    const entries = Array.from(cache.entries())
+    entries.sort((a, b) => a[1].timestamp - b[1].timestamp)
+    const toRemove = entries.slice(0, cache.size - MAX_CACHE_SIZE)
+    toRemove.forEach(([key]) => cache.delete(key))
+  }
+}
+
+function getCachedAsset(assetId) {
+  cleanupCache(assetCache.value)
+  const cached = assetCache.value.get(assetId)
+  if (cached && isCacheValid(cached.timestamp)) {
+    console.log(`📦 Cache HIT for asset: ${assetId}`)
+    cacheHits.value++
+    return cached.data
+  }
+  console.log(`📦 Cache MISS for asset: ${assetId}`)
+  cacheMisses.value++
+  return null
+}
+
+function setCachedAsset(assetId, data) {
+  cleanupCache(assetCache.value)
+  assetCache.value.set(assetId, {
+    data: data,
+    timestamp: Date.now()
+  })
+  console.log(`📦 Cached asset: ${assetId}`)
+}
+
+function getCachedImageUrl(fileId) {
+  cleanupCache(imageUrlCache.value)
+  // Create a cache key that includes offline mode state
+  const cacheKey = `${fileId}_${offlineMode.value ? 'offline' : 'online'}_${localImagePath.value || 'none'}`
+  const cached = imageUrlCache.value.get(cacheKey)
+  if (cached && isCacheValid(cached.timestamp)) {
+    console.log(`🖼️ Cache HIT for image: ${fileId} (key: ${cacheKey})`)
+    cacheHits.value++
+    return cached.url
+  }
+  console.log(`🖼️ Cache MISS for image: ${fileId} (key: ${cacheKey})`)
+  cacheMisses.value++
+  return null
+}
+
+function setCachedImageUrl(fileId, url) {
+  cleanupCache(imageUrlCache.value)
+  // Create a cache key that includes offline mode state
+  const cacheKey = `${fileId}_${offlineMode.value ? 'offline' : 'online'}_${localImagePath.value || 'none'}`
+  imageUrlCache.value.set(cacheKey, {
+    url: url,
+    timestamp: Date.now()
+  })
+  console.log(`🖼️ Cached image URL: ${fileId} (key: ${cacheKey})`)
+}
+
+// Helper function to update image source
+function updateImageSource(fileId, source) {
+  console.log(`🔄 updateImageSource called - fileId: ${fileId}, source: ${source}`)
+  imageActualSources.value[fileId] = source
+  console.log(`🔄 imageActualSources.value after update:`, imageActualSources.value)
+  
+  // Also update the direct ref if this is the reference image
+  if (fileId === referenceFileId.value) {
+    referenceImageSourceRef.value = source
+    console.log(`🔄 Updated referenceImageSourceRef to: ${source}`)
+  }
+}
+
+function handleSearch() {
+  submitted.value = true
+  error.value = ''
+  referenceFileId.value = ''
+  predicted.value = []
+  selectedPredictedIds.value = []
+  rejectedPredictedIds.value = []
+  // Don't clear imageActualSources here - preserve pre-fetched source information
+  referenceImageSourceRef.value = 'api' // Reset reference image source
+  if (assetId.value.trim() === '') return
+  
+  const currentAssetId = assetId.value.trim()
+  
+  // Check cache first
+  const cachedData = getCachedAsset(currentAssetId)
+  if (cachedData) {
+    console.log(`🚀 Using cached data for asset: ${currentAssetId}`)
+    referenceFileId.value = cachedData.reference?.fileId || ''
+    predicted.value = Array.isArray(cachedData.predicted) ? cachedData.predicted : []
+    
+    // Load existing review status if asset was previously reviewed
+    const existingReview = reviewedAssets.value[currentAssetId]
+    
+    if (existingReview) {
+      referenceDecision.value = existingReview.status
+      // Restore selected predicted IDs from saved review
+      selectedPredictedIds.value = existingReview.predictedIds || []
+      // Set rejected IDs to all predicted IDs except the selected ones
+      const allPredictedIds = (predicted.value || []).map(p => String(p.id))
+      rejectedPredictedIds.value = allPredictedIds.filter(id => !selectedPredictedIds.value.includes(id))
+    } else {
+      referenceDecision.value = ''
+      selectedPredictedIds.value = []
+      // Default all predicted as rejected (red frame)
+      rejectedPredictedIds.value = (predicted.value || []).map(p => String(p.id))
+    }
+    
+    // Ensure all predicted images have frames
+    ensureAllPredictedHaveFrames()
+    
+    // Auto-scroll to reference image with longer delay to ensure DOM is updated
+    setTimeout(() => {
+      scrollToReferenceImage()
+    }, 300)
+    
+    // Schedule pre-fetching of next assets
+    schedulePrefetch()
+    return
+  }
+  
+  // If not in cache, fetch from API
+  loading.value = true
+  fetch(`/api/assets/${encodeURIComponent(currentAssetId)}`)
+    .then(async (r) => {
+      if (!r.ok) {
+        let message = 'Failed to search'
+        try {
+          const data = await r.json()
+          if (data && data.error) message = data.error
+        } catch (_) {
+          try {
+            const text = await r.text()
+            if (text) message = text
+          } catch (_) {}
+        }
+        throw new Error(message)
+      }
+      return r.json()
+    })
+    .then((data) => {
+      // Cache the fetched data
+      setCachedAsset(currentAssetId, data)
+      
+      referenceFileId.value = data?.reference?.fileId || ''
+      predicted.value = Array.isArray(data?.predicted) ? data.predicted : []
+      
+      // Load existing review status if asset was previously reviewed
+      const existingReview = reviewedAssets.value[currentAssetId]
+      
+      if (existingReview) {
+        referenceDecision.value = existingReview.status
+        // Restore selected predicted IDs from saved review
+        selectedPredictedIds.value = existingReview.predictedIds || []
+        // Set rejected IDs to all predicted IDs except the selected ones
+        const allPredictedIds = (predicted.value || []).map(p => String(p.id))
+        rejectedPredictedIds.value = allPredictedIds.filter(id => !selectedPredictedIds.value.includes(id))
+      } else {
+        referenceDecision.value = ''
+        selectedPredictedIds.value = []
+        // Default all predicted as rejected (red frame)
+        rejectedPredictedIds.value = (predicted.value || []).map(p => String(p.id))
+      }
+      
+      // Ensure all predicted images have frames
+      ensureAllPredictedHaveFrames()
+      
+      // Auto-scroll to reference image with longer delay to ensure DOM is updated
+      setTimeout(() => {
+        scrollToReferenceImage()
+      }, 300)
+      
+      // Schedule pre-fetching of next assets
+      schedulePrefetch()
+    })
+    .catch((e) => { error.value = e.message || 'Search failed' })
+    .finally(() => { 
+      loading.value = false
+    })
+}
+
+const showEmptyInfo = computed(() => submitted.value && assetId.value.trim() === '')
+const showNoMatches = computed(() => submitted.value && !loading.value && !error.value && assetId.value.trim() !== '' && !referenceFileId.value && predicted.value.length === 0)
+
+function isPredSelected(id) {
+  return selectedPredictedIds.value.includes(String(id))
+}
+
+function togglePredSelected(id) {
+  const key = String(id)
+  const curr = selectedPredictedIds.value.slice()
+  const idx = curr.indexOf(key)
+  if (idx >= 0) {
+    curr.splice(idx, 1)
+    // When removing from selected, add to rejected to ensure it has a frame
+    if (!rejectedPredictedIds.value.includes(key)) {
+      rejectedPredictedIds.value.push(key)
+    }
+  } else {
+    curr.push(key)
+    // ensure mutually exclusive with rejected
+    const rej = rejectedPredictedIds.value.slice()
+    const rIdx = rej.indexOf(key)
+    if (rIdx >= 0) { rej.splice(rIdx, 1) }
+    rejectedPredictedIds.value = rej
+  }
+  selectedPredictedIds.value = curr
+}
+
+function isPredRejected(id) {
+  return rejectedPredictedIds.value.includes(String(id))
+}
+
+function togglePredRejected(id) {
+  const key = String(id)
+  const curr = rejectedPredictedIds.value.slice()
+  const idx = curr.indexOf(key)
+  if (idx >= 0) {
+    curr.splice(idx, 1)
+    // When removing from rejected, add to selected to ensure it has a frame
+    if (!selectedPredictedIds.value.includes(key)) {
+      selectedPredictedIds.value.push(key)
+    }
+  } else {
+    curr.push(key)
+    // ensure mutually exclusive with selected
+    const sel = selectedPredictedIds.value.slice()
+    const sIdx = sel.indexOf(key)
+    if (sIdx >= 0) { sel.splice(sIdx, 1) }
+    selectedPredictedIds.value = sel
+  }
+  rejectedPredictedIds.value = curr
+}
+
+async function loadPage(p = 1) {
+  try {
+    // Use the filtered endpoint if we have a filter other than 'all'
+    if (assetFilter.value !== 'all') {
+      const res = await fetch('/api/assets-page-filtered', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          page: p,
+          pageSize: pageSize.value,
+          filter: assetFilter.value,
+          reviewedAssets: reviewedAssets.value
+        })
+      })
+      const data = await res.json()
+      console.log('Loaded filtered page data:', data)
+      ids.value = Array.isArray(data?.ids) ? data.ids : []
+      page.value = Number(data?.page) || 1
+      pageCount.value = Number(data?.pageCount) || 0
+      totalAssets.value = Number(data?.total) || 0
+      overallTotalAssets.value = Number(data?.overallTotal) || 0
+    } else {
+      // Use the regular endpoint for 'all' filter
+      const res = await fetch(`/api/assets-page?page=${p}&pageSize=${pageSize.value}`)
+      const data = await res.json()
+      console.log('Loaded page data:', data)
+      ids.value = Array.isArray(data?.ids) ? data.ids : []
+      page.value = Number(data?.page) || 1
+      pageCount.value = Number(data?.pageCount) || 0
+      totalAssets.value = Number(data?.total) || 0
+      overallTotalAssets.value = Number(data?.total) || 0 // For 'all' filter, total is the same as overallTotal
+    }
+    
+    console.log('Asset IDs loaded:', ids.value.length, 'ids:', ids.value.slice(0, 5))
+    
+    // Schedule initial pre-fetching if we have assets and no current asset is loaded
+    if (ids.value.length > 0 && !assetId.value.trim()) {
+      setTimeout(() => {
+        prefetchNextAssets()
+      }, 500)
+    }
+  } catch (error) {
+    console.error('Error loading page:', error)
+  }
+}
+
+function goPage(p) {
+  if (p < 1) p = 1
+  if (pageCount.value && p > pageCount.value) p = pageCount.value
+  loadPage(p)
+}
+
+function handlePageSizeChange() {
+  // Reset to first page when changing page size
+  page.value = 1
+  prefetchedAssets.value.clear() // Clear pre-fetched assets when page size changes
+  loadPage(1)
+  try {
+    saveApplicationState()
+  } catch (error) {
+    console.warn('Failed to save application state:', error)
+  }
+}
+
+function handleAssetFilterChange() {
+  // Reset to first page when changing filter
+  page.value = 1
+  prefetchedAssets.value.clear() // Clear pre-fetched assets when filter changes
+  loadPage(1)
+  try {
+    saveApplicationState()
+  } catch (error) {
+    console.warn('Failed to save application state:', error)
+  }
+}
+
+function handleAccept() {
+  if (!assetId.value.trim()) return
+  
+  const selectedIds = selectedPredictedIds.value
+  
+  // Store predicted data with scores for export
+  const predictedData = predicted.value.map(p => ({
+    id: String(p.id),
+    score: p.score
+  }))
+  
+  reviewedAssets.value[assetId.value.trim()] = {
+    status: 'accepted',
+    predictedIds: selectedIds,
+    predictedData: predictedData
+  }
+  referenceDecision.value = 'accepted'
+  
+  // Save to localStorage for persistence
+  localStorage.setItem('reviewedAssets', JSON.stringify(reviewedAssets.value))
+  try {
+    saveApplicationState()
+  } catch (error) {
+    console.warn('Failed to save application state:', error)
+  }
+  
+  // Clear asset cache for this specific asset since review status changed
+  const currentAssetId = assetId.value.trim()
+  assetCache.value.delete(currentAssetId)
+  prefetchedAssets.value.delete(currentAssetId)
+  console.log(`🧹 Asset cache cleared for: ${currentAssetId}`)
+  
+  console.log('Asset accepted:', currentAssetId, 'with predicted IDs:', selectedIds)
+  
+  // Automatically load next unreviewed asset
+  loadNextUnreviewedAsset()
+}
+
+function handleReject() {
+  if (!assetId.value.trim()) return
+  
+  const selectedIds = selectedPredictedIds.value
+  
+  // Store predicted data with scores for export
+  const predictedData = predicted.value.map(p => ({
+    id: String(p.id),
+    score: p.score
+  }))
+  
+  reviewedAssets.value[assetId.value.trim()] = {
+    status: 'rejected',
+    predictedIds: selectedIds,
+    predictedData: predictedData
+  }
+  referenceDecision.value = 'rejected'
+  
+  // Save to localStorage for persistence
+  localStorage.setItem('reviewedAssets', JSON.stringify(reviewedAssets.value))
+  try {
+    saveApplicationState()
+  } catch (error) {
+    console.warn('Failed to save application state:', error)
+  }
+  
+  // Clear asset cache for this specific asset since review status changed
+  const currentAssetId = assetId.value.trim()
+  assetCache.value.delete(currentAssetId)
+  prefetchedAssets.value.delete(currentAssetId)
+  console.log(`🧹 Asset cache cleared for: ${currentAssetId}`)
+  
+  console.log('Asset rejected:', currentAssetId, 'with predicted IDs:', selectedIds)
+  
+  // Automatically load next unreviewed asset
+  loadNextUnreviewedAsset()
+}
+
+function handleCompleteReview() {
+  if (!assetId.value.trim()) return
+  
+  const selectedIds = selectedPredictedIds.value
+  const allPredictedIds = predicted.value.map(p => String(p.id))
+  
+  // Check if all predicted images are rejected (red frame)
+  const allRejected = allPredictedIds.every(id => rejectedPredictedIds.value.includes(id))
+  
+  // If all images are rejected, mark as rejected, otherwise as accepted
+  const status = allRejected ? 'rejected' : 'accepted'
+  
+  // Store predicted data with scores for export
+  const predictedData = predicted.value.map(p => ({
+    id: String(p.id),
+    score: p.score
+  }))
+  
+  reviewedAssets.value[assetId.value.trim()] = {
+    status: status,
+    predictedIds: selectedIds,
+    predictedData: predictedData // Store all predicted data with scores
+  }
+  referenceDecision.value = status
+  
+  // Save to localStorage for persistence
+  localStorage.setItem('reviewedAssets', JSON.stringify(reviewedAssets.value))
+  try {
+    saveApplicationState()
+  } catch (error) {
+    console.warn('Failed to save application state:', error)
+  }
+  
+  // Clear asset cache for this specific asset since review status changed
+  const currentAssetId = assetId.value.trim()
+  assetCache.value.delete(currentAssetId)
+  prefetchedAssets.value.delete(currentAssetId)
+  console.log(`🧹 Asset cache cleared for: ${currentAssetId}`)
+  
+  console.log('Asset review completed:', currentAssetId, 'with status:', status, 'and predicted IDs:', selectedIds)
+  
+  // Automatically load next unreviewed asset
+  loadNextUnreviewedAsset()
+}
+
+function handleClearReview() {
+  if (!assetId.value.trim()) return
+  
+  // Remove the asset from reviewed assets
+  delete reviewedAssets.value[assetId.value.trim()]
+  referenceDecision.value = ''
+  
+  // Reset predicted image selections to default (all rejected)
+  selectedPredictedIds.value = []
+  rejectedPredictedIds.value = (predicted.value || []).map(p => String(p.id))
+  
+  // Save to localStorage for persistence
+  localStorage.setItem('reviewedAssets', JSON.stringify(reviewedAssets.value))
+  try {
+    saveApplicationState()
+  } catch (error) {
+    console.warn('Failed to save application state:', error)
+  }
+  
+  // Clear asset cache for this specific asset since review status changed
+  const currentAssetId = assetId.value.trim()
+  assetCache.value.delete(currentAssetId)
+  prefetchedAssets.value.delete(currentAssetId)
+  console.log(`🧹 Asset cache cleared for: ${currentAssetId}`)
+  
+  console.log('Asset review cleared:', currentAssetId)
+}
+
+function loadNextUnreviewedAsset() {
+  // Find the next unreviewed asset in the current page
+  const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  let nextIndex = currentIndex + 1
+  
+  // Look for next unreviewed asset on current page
+  while (nextIndex < ids.value.length) {
+    const nextId = ids.value[nextIndex]
+    if (!isAssetReviewed(nextId)) {
+      assetId.value = nextId
+      handleSearch()
+      return
+    }
+    nextIndex++
+  }
+  
+  // If no unreviewed assets on current page, try next page
+  if (page.value < pageCount.value) {
+    goPage(page.value + 1)
+    // Wait for page to load, then find first unreviewed asset
+    setTimeout(() => {
+      const firstUnreviewed = ids.value.find(id => !isAssetReviewed(id))
+      if (firstUnreviewed) {
+        assetId.value = firstUnreviewed
+        handleSearch()
+      }
+    }, 100)
+  } else {
+    // If we're on the last page and no more unreviewed assets, show completion message
+    console.log('All assets have been reviewed!')
+  }
+}
+
+function isAssetReviewed(assetId) {
+  return reviewedAssets.value[assetId] !== undefined
+}
+
+function getAssetReviewStatus(assetId) {
+  return reviewedAssets.value[assetId]?.status || null
+}
+
+// Navigation functions
+function goToPreviousAsset() {
+  const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  if (currentIndex > 0) {
+    assetId.value = ids.value[currentIndex - 1]
+    handleSearch() // Use handleSearch instead of loadAssetImages to trigger prefetching
+  }
+}
+
+function goToNextAsset() {
+  const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  if (currentIndex < ids.value.length - 1) {
+    assetId.value = ids.value[currentIndex + 1]
+    handleSearch() // Use handleSearch instead of loadAssetImages to trigger prefetching
+  }
+}
+
+// Function to scroll to reference image
+function scrollToReferenceImage() {
+  console.log('scrollToReferenceImage called, referenceImageRef:', referenceImageRef.value)
+  if (referenceImageRef.value) {
+    setTimeout(() => {
+      referenceImageRef.value.scrollIntoView({ 
+        behavior: 'smooth', 
+        block: 'start',
+        inline: 'nearest'
+      })
+      console.log('Scrolled to reference image')
+    }, 200) // Longer delay to ensure DOM is updated
+  } else {
+    console.log('referenceImageRef is null, cannot scroll')
+    // Try again after a longer delay in case DOM is still updating
+    setTimeout(() => {
+      console.log('Retrying scroll, referenceImageRef:', referenceImageRef.value)
+      if (referenceImageRef.value) {
+        referenceImageRef.value.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'start',
+          inline: 'nearest'
+        })
+        console.log('Scrolled to reference image on retry')
+      } else {
+        console.log('Still null on retry')
+      }
+    }, 500)
+  }
+}
+
+// Function to show image preview on hover
+function showImagePreview(image) {
+  previewImage.value = image
+}
+
+  // Function to show reference image preview
+  function showReferenceImagePreview() {
+    previewImage.value = {
+      id: assetId.value,
+      fileId: referenceFileId.value,
+      score: null
+    }
+  }
+
+// Function to hide image preview
+function hideImagePreview() {
+  previewImage.value = null
+}
+
+// Function to load only the images without full page refresh
+function loadAssetImages(assetId) {
+  if (!assetId || assetId.trim() === '') return
+  
+  loading.value = true
+  error.value = ''
+  // Don't clear imageActualSources here - preserve pre-fetched source information
+  referenceImageSourceRef.value = 'api' // Reset reference image source
+  
+  fetch(`/api/assets/${encodeURIComponent(assetId.trim())}`)
+    .then(async (r) => {
+      if (!r.ok) {
+        let message = 'Failed to load images'
+        try {
+          const data = await r.json()
+          if (data && data.error) message = data.error
+        } catch (_) {
+          try {
+            const text = await r.text()
+            if (text) message = text
+          } catch (_) {}
+        }
+        throw new Error(message)
+      }
+      return r.json()
+    })
+    .then((data) => {
+      referenceFileId.value = data?.reference?.fileId || ''
+      predicted.value = Array.isArray(data?.predicted) ? data.predicted : []
+      
+      // Load existing review status if asset was previously reviewed
+      const existingReview = reviewedAssets.value[assetId.trim()]
+      
+      if (existingReview) {
+        referenceDecision.value = existingReview.status
+        // Restore selected predicted IDs from saved review
+        selectedPredictedIds.value = existingReview.predictedIds || []
+        // Set rejected IDs to all predicted IDs except the selected ones
+        const allPredictedIds = (predicted.value || []).map(p => String(p.id))
+        rejectedPredictedIds.value = allPredictedIds.filter(id => !selectedPredictedIds.value.includes(id))
+      } else {
+        referenceDecision.value = ''
+        selectedPredictedIds.value = []
+               // Default all predicted as rejected (red frame)
+       rejectedPredictedIds.value = (predicted.value || []).map(p => String(p.id))
+     }
+     
+     // Ensure all predicted images have frames
+     ensureAllPredictedHaveFrames()
+     
+     // Auto-scroll to reference image with longer delay to ensure DOM is updated
+     setTimeout(() => {
+       scrollToReferenceImage()
+     }, 300)
+     
+     // Schedule pre-fetching of next assets
+     schedulePrefetch()
+   })
+    .catch((e) => { error.value = e.message || 'Failed to load images' })
+    .finally(() => { loading.value = false })
+}
+
+// Computed properties for navigation
+const canGoToPrevious = computed(() => {
+  if (!assetId.value.trim() || ids.value.length === 0) return false
+  const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  return currentIndex > 0
+})
+
+const canGoToNext = computed(() => {
+  if (!assetId.value.trim() || ids.value.length === 0) return false
+  const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+  return currentIndex < ids.value.length - 1
+})
+
+// Comprehensive data persistence system
+function saveApplicationState() {
+  try {
+    const state = {
+      // Current asset and navigation state
+      assetId: assetId.value,
+      page: page.value,
+      pageSize: pageSize.value,
+      assetFilter: assetFilter.value,
+      activeTab: activeTab.value,
+      
+      // Export settings
+      exportPreviewPage: exportPreviewPage.value,
+      exportPreviewPageSize: exportPreviewPageSize.value,
+      exportFilter: exportFilter.value,
+      
+      // Current asset review state
+      referenceDecision: referenceDecision.value,
+      selectedPredictedIds: selectedPredictedIds.value,
+      rejectedPredictedIds: rejectedPredictedIds.value,
+      
+      // Settings
+      darkMode: darkMode.value,
+      offlineMode: offlineMode.value,
+      localImagePath: localImagePath.value,
+      
+      // Cache statistics
+      cacheHits: cacheHits.value,
+      cacheMisses: cacheMisses.value,
+      
+      // Timestamp for validation
+      timestamp: Date.now()
+    }
+    
+    localStorage.setItem('applicationState', JSON.stringify(state))
+    console.log('💾 Application state saved successfully')
+  } catch (error) {
+    console.error('Error saving application state:', error)
+  }
+}
+
+function loadApplicationState() {
+  try {
+    const saved = localStorage.getItem('applicationState')
+    if (saved) {
+      const state = JSON.parse(saved)
+      
+      // Validate timestamp (don't restore if older than 30 days)
+      const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000)
+      if (state.timestamp && state.timestamp < thirtyDaysAgo) {
+        console.log('🕒 Application state is too old, starting fresh')
+        return
+      }
+      
+      // Restore state
+      if (state.assetId) assetId.value = state.assetId
+      if (state.page) page.value = state.page
+      if (state.pageSize) pageSize.value = state.pageSize
+      if (state.assetFilter) assetFilter.value = state.assetFilter
+      if (state.activeTab) activeTab.value = state.activeTab
+      
+      if (state.exportPreviewPage) exportPreviewPage.value = state.exportPreviewPage
+      if (state.exportPreviewPageSize) exportPreviewPageSize.value = state.exportPreviewPageSize
+      if (state.exportFilter) exportFilter.value = state.exportFilter
+      
+      if (state.referenceDecision) referenceDecision.value = state.referenceDecision
+      if (state.selectedPredictedIds) selectedPredictedIds.value = state.selectedPredictedIds
+      if (state.rejectedPredictedIds) rejectedPredictedIds.value = state.rejectedPredictedIds
+      
+      if (state.darkMode !== undefined) darkMode.value = state.darkMode
+      if (state.offlineMode !== undefined) offlineMode.value = state.offlineMode
+      if (state.localImagePath) localImagePath.value = state.localImagePath
+      
+      if (state.cacheHits !== undefined) cacheHits.value = state.cacheHits
+      if (state.cacheMisses !== undefined) cacheMisses.value = state.cacheMisses
+      
+      console.log('📂 Application state restored successfully')
+    }
+  } catch (error) {
+    console.error('Error loading application state:', error)
+  }
+}
+
+// Load reviewed assets from localStorage on component mount
+function loadReviewedAssets() {
+  try {
+    const saved = localStorage.getItem('reviewedAssets')
+    if (saved) {
+      reviewedAssets.value = JSON.parse(saved)
+      console.log('Loaded reviewed assets:', reviewedAssets.value)
+    }
+  } catch (error) {
+    console.error('Error loading reviewed assets:', error)
+  }
+}
+
+// Load dark mode preference from localStorage
+function loadDarkModePreference() {
+  try {
+    const saved = localStorage.getItem('darkMode')
+    if (saved !== null) {
+      darkMode.value = JSON.parse(saved)
+      console.log('Loaded dark mode preference:', darkMode.value)
+    }
+  } catch (error) {
+    console.error('Error loading dark mode preference:', error)
+  }
+}
+
+// Toggle dark mode
+function toggleDarkMode() {
+  darkMode.value = !darkMode.value
+  localStorage.setItem('darkMode', JSON.stringify(darkMode.value))
+  try {
+    saveApplicationState()
+  } catch (error) {
+    console.warn('Failed to save application state:', error)
+  }
+  console.log('Dark mode toggled to:', darkMode.value)
+}
+
+// Keyboard navigation handler
+function handleKeyboardNavigation(event) {
+  // Only handle keyboard events when we're on the review tab and have an asset loaded
+  if (activeTab.value !== 'review' || !assetId.value.trim()) return
+  
+  // Don't handle keyboard events if user is typing in an input field
+  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
+    return
+  }
+  
+  // Prevent default behavior for these keys
+  event.preventDefault()
+  
+  switch (event.key) {
+    case 'ArrowLeft':
+    case 'a':
+    case 'A':
+      if (canGoToPrevious.value) {
+        console.log('⬅️ Keyboard navigation: Previous asset')
+        goToPreviousAsset()
+      }
+      break
+    case 'ArrowRight':
+    case 'd':
+    case 'D':
+      if (canGoToNext.value) {
+        console.log('➡️ Keyboard navigation: Next asset')
+        goToNextAsset()
+      }
+      break
+    case 'Enter':
+    case ' ':
+      if (assetId.value.trim()) {
+        console.log('✅ Keyboard navigation: Complete review')
+        handleCompleteReview()
+      }
+      break
+    case 'Delete':
+    case 'Backspace':
+    case 'r':
+    case 'R':
+      if (assetId.value.trim()) {
+        console.log('🗑️ Keyboard navigation: Clear review')
+        handleClearReview()
+      }
+      break
+
+    case 'Escape':
+      console.log('🚪 Keyboard navigation: Hide preview')
+      hideImagePreview()
+      break
+    case 'f':
+    case 'F':
+      console.log('🔍 Keyboard navigation: Focus search')
+      // Focus the asset ID input field
+      const searchInput = document.querySelector('input[placeholder*="asset"]')
+      if (searchInput) {
+        searchInput.focus()
+        searchInput.select()
+      }
+      break
+  }
+}
+
+// Lifecycle hooks
+onMounted(() => {
+  // Add keyboard event listener
+  document.addEventListener('keydown', handleKeyboardNavigation)
+  
+  // Auto-save application state when important values change
+  // Use debounced watchers to prevent excessive saves
+  let saveTimeout = null
+  const debouncedSave = () => {
+    if (saveTimeout) clearTimeout(saveTimeout)
+    saveTimeout = setTimeout(() => {
+      saveApplicationState()
+    }, 1000) // Save after 1 second of inactivity
+  }
+
+  // Watch important state changes with debouncing
+  watch([assetId, page, pageSize, assetFilter, activeTab], debouncedSave, { deep: true })
+  watch([exportPreviewPage, exportPreviewPageSize, exportFilter], debouncedSave)
+  watch([referenceDecision, selectedPredictedIds, rejectedPredictedIds], debouncedSave, { deep: true })
+
+  // Watch cache statistics (less frequent)
+  watch([cacheHits, cacheMisses], () => {
+    if (saveTimeout) clearTimeout(saveTimeout)
+    saveTimeout = setTimeout(() => {
+      saveApplicationState()
+    }, 2000) // Save cache stats after 2 seconds
+  })
+})
+
+onUnmounted(() => {
+  // Remove keyboard event listener
+  document.removeEventListener('keydown', handleKeyboardNavigation)
+})
+
+// Initialize application state
+loadApplicationState()
+loadReviewedAssets()
+loadDarkModePreference()
+loadOfflineSettings()
+
+// Load initial page after state is restored
+loadPage(1)
+
+function exportToCSV() {
+  const csvData = []
+  
+  // Add header row
+  csvData.push(['Asset ID', 'Predicted ID', 'Score', 'Status'])
+  
+  // Add data rows - one row per asset ID - predicted ID combination
+  Object.entries(reviewedAssets.value).forEach(([assetId, reviewData]) => {
+    // Apply filter based on selected filter
+    if (exportFilter.value === 'accepted' && reviewData.status !== 'accepted') return
+    if (exportFilter.value === 'rejected' && reviewData.status !== 'rejected') return
+    
+    console.log('Processing asset:', assetId, 'reviewData:', reviewData)
+    
+    if (reviewData.predictedIds && reviewData.predictedIds.length > 0) {
+      // For each selected predicted ID, create a separate row
+      reviewData.predictedIds.forEach(predictedId => {
+        // Find the score for this predicted ID from stored data
+        let score = 'N/A'
+        if (reviewData.predictedData) {
+          console.log('Looking for predictedId:', predictedId, 'in predictedData:', reviewData.predictedData)
+          const predItem = reviewData.predictedData.find(p => String(p.id) === String(predictedId))
+          console.log('Found predItem:', predItem)
+          if (predItem && predItem.score != null) {
+            score = Number(predItem.score).toFixed(2)
+          }
+        } else {
+          console.log('No predictedData found for asset:', assetId)
+        }
+        csvData.push([assetId, predictedId, score, reviewData.status])
+      })
+    } else {
+      // If no predicted IDs selected, still create a row with the asset
+      csvData.push([assetId, 'None', 'N/A', reviewData.status])
+    }
+  })
+  
+  // Convert to CSV string
+  const csvContent = csvData.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
+  
+  // Create and download file
+  const filterSuffix = exportFilter.value !== 'all' ? `_${exportFilter.value}` : ''
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const link = document.createElement('a')
+  const url = URL.createObjectURL(blob)
+  link.setAttribute('href', url)
+  link.setAttribute('download', `asset_reviews${filterSuffix}_${new Date().toISOString().split('T')[0]}.csv`)
+  link.style.visibility = 'hidden'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  
+  console.log('CSV exported with', csvData.length - 1, 'rows (excluding header) for filter:', exportFilter.value)
+}
+
+// Export reviewed assets data as JSON for backup/transfer
+function exportReviewedAssets() {
+  try {
+    const exportData = {
+      reviewedAssets: reviewedAssets.value,
+      exportDate: new Date().toISOString(),
+      version: '1.0',
+      totalAssets: Object.keys(reviewedAssets.value).length,
+      acceptedCount: Object.values(reviewedAssets.value).filter(r => r.status === 'accepted').length,
+      rejectedCount: Object.values(reviewedAssets.value).filter(r => r.status === 'rejected').length
+    }
+    
+    const jsonContent = JSON.stringify(exportData, null, 2)
+    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' })
+    const link = document.createElement('a')
+    const url = URL.createObjectURL(blob)
+    link.setAttribute('href', url)
+    link.setAttribute('download', `reviewed_assets_backup_${new Date().toISOString().split('T')[0]}.json`)
+    link.style.visibility = 'hidden'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    
+    console.log('✅ Reviewed assets exported successfully:', exportData.totalAssets, 'assets')
+    alert(`✅ Successfully exported ${exportData.totalAssets} reviewed assets!`)
+  } catch (error) {
+    console.error('❌ Error exporting reviewed assets:', error)
+    alert('❌ Error exporting reviewed assets. Please try again.')
+  }
+}
+
+// Import reviewed assets data from JSON file
+function importReviewedAssets() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json'
+  input.style.display = 'none'
+  
+  input.onchange = (event) => {
+    const file = event.target.files[0]
+    if (!file) return
+    
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const importData = JSON.parse(e.target.result)
+        
+        // Validate the imported data
+        if (!importData.reviewedAssets || typeof importData.reviewedAssets !== 'object') {
+          throw new Error('Invalid file format: missing reviewedAssets data')
+        }
+        
+        // Check if this is a valid backup file
+        if (!importData.exportDate || !importData.version) {
+          throw new Error('Invalid backup file: missing metadata')
+        }
+        
+        const totalAssets = Object.keys(importData.reviewedAssets).length
+        const acceptedCount = Object.values(importData.reviewedAssets).filter(r => r.status === 'accepted').length
+        const rejectedCount = Object.values(importData.reviewedAssets).filter(r => r.status === 'rejected').length
+        
+        // Show confirmation dialog with import details
+        const confirmMessage = `📥 Import Review Data
+        
+File Details:
+• Export Date: ${new Date(importData.exportDate).toLocaleString()}
+• Total Assets: ${totalAssets}
+• Accepted: ${acceptedCount}
+• Rejected: ${rejectedCount}
+
+Current Data:
+• Total Assets: ${Object.keys(reviewedAssets.value).length}
+• Accepted: ${Object.values(reviewedAssets.value).filter(r => r.status === 'accepted').length}
+• Rejected: ${Object.values(reviewedAssets.value).filter(r => r.status === 'rejected').length}
+
+⚠️ This will replace your current review data!
+Type "IMPORT" to confirm:`
+        
+        const userInput = prompt(confirmMessage)
+        
+        if (userInput === 'IMPORT') {
+          // Import the data
+          reviewedAssets.value = importData.reviewedAssets
+          
+          // Save to localStorage
+          localStorage.setItem('reviewedAssets', JSON.stringify(reviewedAssets.value))
+          saveApplicationState()
+          
+          // Clear caches since review data changed
+          assetCache.value.clear()
+          prefetchedAssets.value.clear()
+          
+          console.log('✅ Successfully imported', totalAssets, 'reviewed assets')
+          alert(`✅ Successfully imported ${totalAssets} reviewed assets!`)
+          
+          // Reload current page to update asset ID pills
+          loadPage(page.value)
+        } else {
+          console.log('Import cancelled by user')
+          alert('Import cancelled.')
+        }
+        
+      } catch (error) {
+        console.error('❌ Error importing reviewed assets:', error)
+        alert(`❌ Error importing file: ${error.message}`)
+      }
+    }
+    
+    reader.readAsText(file)
+  }
+  
+  document.body.appendChild(input)
+  input.click()
+  document.body.removeChild(input)
+}
+
+// Computed properties for export preview pagination
+const exportPreviewData = computed(() => {
+  let flattenedData = []
+  
+  // Flatten the data to one row per asset ID - predicted ID combination
+  Object.entries(reviewedAssets.value).forEach(([assetId, reviewData]) => {
+    // Filter based on selected filter
+    if (exportFilter.value === 'accepted' && reviewData.status !== 'accepted') return
+    if (exportFilter.value === 'rejected' && reviewData.status !== 'rejected') return
+    
+    if (reviewData.predictedIds && reviewData.predictedIds.length > 0) {
+      // For each selected predicted ID, create a separate row
+      reviewData.predictedIds.forEach(predictedId => {
+        // Find the score for this predicted ID from stored data
+        let score = 'N/A'
+        if (reviewData.predictedData) {
+          const predItem = reviewData.predictedData.find(p => String(p.id) === String(predictedId))
+          if (predItem && predItem.score != null) {
+            score = Number(predItem.score).toFixed(2)
+          }
+        }
+        flattenedData.push({
+          assetId,
+          predictedId,
+          score,
+          status: reviewData.status
+        })
+      })
+    } else {
+      // If no predicted IDs selected, still create a row with the asset
+      flattenedData.push({
+        assetId,
+        predictedId: 'None',
+        score: 'N/A',
+        status: reviewData.status
+      })
+    }
+  })
+  
+  const startIndex = (exportPreviewPage.value - 1) * exportPreviewPageSize.value
+  const endIndex = startIndex + exportPreviewPageSize.value
+  return flattenedData.slice(startIndex, endIndex)
+})
+
+const exportPreviewPageCount = computed(() => {
+  let totalRows = 0
+  
+  // Count total rows for pagination
+  Object.entries(reviewedAssets.value).forEach(([assetId, reviewData]) => {
+    // Filter based on selected filter
+    if (exportFilter.value === 'accepted' && reviewData.status !== 'accepted') return
+    if (exportFilter.value === 'rejected' && reviewData.status !== 'rejected') return
+    
+    if (reviewData.predictedIds && reviewData.predictedIds.length > 0) {
+      totalRows += reviewData.predictedIds.length
+    } else {
+      totalRows += 1 // One row for assets with no selected predicted IDs
+    }
+  })
+  
+  return Math.ceil(totalRows / exportPreviewPageSize.value)
+})
+
+function goExportPreviewPage(page) {
+  if (page < 1) page = 1
+  if (exportPreviewPageCount.value && page > exportPreviewPageCount.value) page = exportPreviewPageCount.value
+  exportPreviewPage.value = page
+}
+
+function handleExportFilterChange() {
+  // Reset to first page when changing filter
+  exportPreviewPage.value = 1
+}
+
+// Function to ensure all predicted images have frames (either red or green)
+function ensureAllPredictedHaveFrames() {
+  const allPredictedIds = (predicted.value || []).map(p => String(p.id))
+  const selectedIds = selectedPredictedIds.value
+  const rejectedIds = rejectedPredictedIds.value
+  
+  // For any predicted image that doesn't have a frame, assign it to rejected (red)
+  allPredictedIds.forEach(id => {
+    if (!selectedIds.includes(id) && !rejectedIds.includes(id)) {
+      rejectedPredictedIds.value.push(id)
+    }
+  })
+}
+
+// Settings functions
+function clearAllReviews() {
+  const warningMessage = `🚨 NUCLEAR OPTION ACTIVATED! 🚨
+
+Are you absolutely, positively, 100% certain you want to delete ALL your precious review work?
+
+⚠️  WARNING: This will erase:
+• All your accepted assets (${Object.values(reviewedAssets.value).filter(r => r.status === 'accepted').length} items)
+• All your rejected assets (${Object.values(reviewedAssets.value).filter(r => r.status === 'rejected').length} items)
+• All your carefully selected target IDs
+• Hours of your valuable time
+
+💡 RECOMMENDATION: 
+Instead of this nuclear option, use the "Clear Review" button under each asset for individual resets.
+
+🔥 ONLY proceed if:
+• The world is ending
+• You're starting a completely new dataset
+• You've been possessed by a data-destroying demon
+• You're absolutely sure you want to lose everything
+
+Type "I AM SURE" to confirm this irreversible action:`
+  
+  const userInput = prompt(warningMessage)
+  
+  if (userInput === 'I AM SURE') {
+    reviewedAssets.value = {}
+    localStorage.removeItem('reviewedAssets')
+    console.log('All review data cleared - user confirmed nuclear option')
+    
+    // Clear asset cache since review data affects asset display
+    assetCache.value.clear()
+    imageActualSources.value = {} // Clear source tracking since review data affects asset display
+    try {
+      saveApplicationState()
+    } catch (error) {
+      console.warn('Failed to save application state:', error)
+    }
+    console.log('🧹 Asset cache and source tracking cleared due to review data reset')
+    
+    // Reset current asset if it was reviewed
+    if (assetId.value.trim() && reviewedAssets.value[assetId.value.trim()]) {
+      referenceDecision.value = ''
+      selectedPredictedIds.value = []
+      rejectedPredictedIds.value = (predicted.value || []).map(p => String(p.id))
+    }
+    
+    // Reload current page to update asset ID pills
+    loadPage(page.value)
+    
+    alert('💥 BOOM! All review data has been obliterated. You monster! 😱')
+  } else {
+    console.log('Nuclear option cancelled - user chickened out')
+    alert('😌 Wise choice! Your precious data lives to see another day. Use the individual "Clear Review" buttons instead!')
+  }
+}
+
+function clearAllApplicationData() {
+  const warningMessage = `🚨 ULTIMATE NUCLEAR OPTION ACTIVATED! 🚨
+
+Are you absolutely, positively, 100% certain you want to delete ALL application data?
+
+⚠️  WARNING: This will erase:
+• All your review work (${Object.keys(reviewedAssets.value).length} items)
+• All your settings (dark mode, offline mode, etc.)
+• All your navigation state (current page, filters, etc.)
+• All your cache data
+• Everything else
+
+💡 RECOMMENDATION: 
+Use "Clear All Reviews" instead if you only want to reset review data.
+
+🔥 ONLY proceed if:
+• You want to completely start fresh
+• You're experiencing severe issues
+• You're absolutely sure you want to lose everything
+
+Type "RESET EVERYTHING" to confirm this irreversible action:`
+  
+  const userInput = prompt(warningMessage)
+  
+  if (userInput === 'RESET EVERYTHING') {
+    // Clear all localStorage data
+    localStorage.clear()
+    
+    // Reset all reactive variables to defaults
+    assetId.value = ''
+    page.value = 1
+    pageSize.value = 20
+    assetFilter.value = 'all'
+    activeTab.value = 'review'
+    exportPreviewPage.value = 1
+    exportPreviewPageSize.value = 10
+    exportFilter.value = 'all'
+    referenceDecision.value = ''
+    selectedPredictedIds.value = []
+    rejectedPredictedIds.value = []
+    darkMode.value = false
+    offlineMode.value = false
+    localImagePath.value = ''
+    reviewedAssets.value = {}
+    
+    // Clear caches
+    clearAllCaches()
+    assetCache.value.clear()
+    imageActualSources.value = {}
+    prefetchedAssets.value.clear()
+    
+    console.log('All application data cleared and reset to defaults')
+    alert('💥 BOOM! All application data has been obliterated. Fresh start! 🚀')
+  } else {
+    console.log('Ultimate nuclear option cancelled - user chickened out')
+    alert('😌 Wise choice! Your data lives to see another day!')
+  }
+}
+
+function getReviewStats() {
+  const total = Object.keys(reviewedAssets.value).length
+  const accepted = Object.values(reviewedAssets.value).filter(r => r.status === 'accepted').length
+  const rejected = Object.values(reviewedAssets.value).filter(r => r.status === 'rejected').length
+  const totalTargetIds = Object.values(reviewedAssets.value).reduce((total, review) => total + review.predictedIds.length, 0)
+  
+  return { total, accepted, rejected, totalTargetIds }
+}
+
+function getCacheStats() {
+  const totalRequests = cacheHits.value + cacheMisses.value
+  const hitRate = totalRequests > 0 ? Math.round((cacheHits.value / totalRequests) * 100) : 0
+  
+  // Estimate cache size (rough calculation)
+  const assetCacheSize = assetCache.value.size * 0.1 // ~100KB per asset
+  const imageCacheSize = imageUrlCache.value.size * 0.01 // ~10KB per image URL
+  const totalSize = Math.round((assetCacheSize + imageCacheSize) * 100) / 100
+  
+  return { hitRate, totalSize }
+}
+
+function clearAllCaches() {
+  assetCache.value.clear()
+  imageUrlCache.value.clear()
+  prefetchedAssets.value.clear()
+  imageActualSources.value = {} // Clear source tracking
+  cacheHits.value = 0
+  cacheMisses.value = 0
+  console.log('🧹 All caches and source tracking cleared')
+}
+
+// Pre-fetching functions
+async function prefetchAsset(assetId) {
+  if (!assetId || prefetchedAssets.value.has(assetId)) {
+    return // Already pre-fetched or invalid
+  }
+  
+  try {
+    console.log(`🚀 Pre-fetching asset: ${assetId}`)
+    const response = await fetch(`/api/assets/${encodeURIComponent(assetId)}`)
+    if (response.ok) {
+      const data = await response.json()
+      setCachedAsset(assetId, data)
+      prefetchedAssets.value.add(assetId)
+      console.log(`✅ Pre-fetched asset: ${assetId}`)
+      
+      // Pre-load images for this asset
+      await prefetchAssetImages(data)
+    }
+  } catch (error) {
+    console.warn(`⚠️ Failed to pre-fetch asset ${assetId}:`, error)
+  }
+}
+
+async function prefetchAssetImages(assetData) {
+  if (!assetData) return
+  
+  const imagesToPreload = []
+  
+  // Add reference image
+  if (assetData.reference?.fileId) {
+    console.log(`DEBUG: Prefetching reference image. assetData.reference.fileId: ${assetData.reference.fileId}, assetData.reference.assetId: ${assetData.reference.assetId}`);
+    // Ensure we have a valid assetId for reference image
+    const referenceAssetId = assetData.reference.assetId
+    if (!referenceAssetId) {
+      console.warn(`⚠️ No assetId found for reference image with fileId: ${assetData.reference.fileId}, skipping pre-fetch`)
+      return
+    }
+    const referenceUrl = getImageUrl(assetData.reference.fileId, referenceAssetId)
+    imagesToPreload.push({
+      url: referenceUrl,
+      fileId: assetData.reference.fileId,
+      type: 'reference'
+    })
+  }
+  
+  // Add predicted images
+  if (Array.isArray(assetData.predicted)) {
+    assetData.predicted.forEach(pred => {
+      if (pred.fileId) {
+        console.log(`DEBUG: Prefetching predicted image. pred.fileId: ${pred.fileId}, pred.id: ${pred.id}`);
+        // Ensure we have a valid assetId for predicted images
+        // pred.id should be the assetId for the predicted image
+        const predictedAssetId = pred.id || pred.assetId
+        if (!predictedAssetId) {
+          console.warn(`⚠️ No assetId found for predicted image with fileId: ${pred.fileId}, skipping pre-fetch`)
+          return
+        }
+        const predictedUrl = getImageUrl(pred.fileId, predictedAssetId)
+        imagesToPreload.push({
+          url: predictedUrl,
+          fileId: pred.fileId,
+          type: 'predicted'
+        })
+      }
+    })
+  }
+  
+  // Pre-load all images and track their sources
+  const preloadPromises = imagesToPreload.map(({ url, fileId, type }) => {
+    return new Promise((resolve) => {
+      const img = new Image()
+      img.onload = () => {
+        // Determine the source based on the URL that successfully loaded
+        let actualSource = 'api' // default
+        if (url.includes('/api/local-images/')) {
+          actualSource = 'local'
+        } else if (url.includes('/api/images/')) {
+          actualSource = 'api'
+        }
+        
+        // Update the image source tracking
+        updateImageSource(fileId, actualSource)
+        console.log(`🖼️ Pre-fetch: Set source to ${actualSource} for ${type} fileId: ${fileId}`)
+        
+        resolve()
+      }
+      img.onerror = () => {
+        console.log(`❌ Pre-fetch: Image failed to load for ${type} fileId: ${fileId}, URL: ${url}`)
+        // If this was a local image that failed, try the API fallback during pre-fetch
+        if (url.includes('/api/local-images/')) {
+          console.log(`🔄 Pre-fetch: Trying API fallback for ${type} fileId: ${fileId}`)
+          const apiUrl = `/api/images/${fileId}`
+          const fallbackImg = new Image()
+          fallbackImg.onload = () => {
+            updateImageSource(fileId, 'api')
+            console.log(`🖼️ Pre-fetch: Fallback successful, set source to api for ${type} fileId: ${fileId}`)
+            resolve()
+          }
+          fallbackImg.onerror = () => {
+            console.log(`❌ Pre-fetch: Fallback also failed for ${type} fileId: ${fileId}`)
+            resolve()
+          }
+          fallbackImg.src = apiUrl
+        } else {
+          resolve()
+        }
+      }
+      img.src = url
+    })
+  })
+  
+  await Promise.allSettled(preloadPromises)
+  console.log(`DEBUG: Finished pre-loading ${imagesToPreload.length} images for asset data.`)
+  console.log(`🖼️ Pre-loaded ${imagesToPreload.length} images`)
+}
+
+async function prefetchNextAssets() {
+  if (isPrefetching.value || !assetId.value.trim() || ids.value.length === 0) {
+    return
+  }
+  
+  isPrefetching.value = true
+  prefetchProgress.value = 0
+  
+  try {
+    const currentIndex = ids.value.findIndex(id => id === assetId.value.trim())
+    if (currentIndex === -1) return
+    
+    const assetsToPrefetch = []
+    
+    // Get next PREFETCH_COUNT assets that haven't been pre-fetched yet
+    for (let i = 1; i <= PREFETCH_COUNT; i++) {
+      const nextIndex = currentIndex + i
+      if (nextIndex < ids.value.length) {
+        const nextAssetId = ids.value[nextIndex]
+        if (!prefetchedAssets.value.has(nextAssetId)) {
+          assetsToPrefetch.push(nextAssetId)
+        }
+      }
+    }
+    
+    // Also prefetch previous assets for better navigation experience
+    for (let i = 1; i <= Math.min(2, PREFETCH_COUNT); i++) {
+      const prevIndex = currentIndex - i
+      if (prevIndex >= 0) {
+        const prevAssetId = ids.value[prevIndex]
+        if (!prefetchedAssets.value.has(prevAssetId)) {
+          assetsToPrefetch.push(prevAssetId)
+        }
+      }
+    }
+    
+    if (assetsToPrefetch.length === 0) {
+      console.log('🚀 No new assets to prefetch')
+      return
+    }
+    
+    console.log(`🚀 Starting pre-fetch for ${assetsToPrefetch.length} assets`)
+    
+    // Pre-fetch assets with progress tracking
+    for (let i = 0; i < assetsToPrefetch.length; i++) {
+      try {
+        await prefetchAsset(assetsToPrefetch[i])
+        prefetchProgress.value = ((i + 1) / assetsToPrefetch.length) * 100
+      } catch (error) {
+        console.warn(`⚠️ Failed to prefetch asset ${assetsToPrefetch[i]}:`, error)
+      }
+    }
+    
+    console.log(`🚀 Pre-fetching completed for ${assetsToPrefetch.length} assets`)
+  } catch (error) {
+    console.error('❌ Error during pre-fetching:', error)
+  } finally {
+    isPrefetching.value = false
+    prefetchProgress.value = 0
+  }
+}
+
+function schedulePrefetch() {
+  // Schedule pre-fetching after a short delay to avoid blocking the UI
+  setTimeout(() => {
+    prefetchNextAssets()
+  }, 100)
+}
+
+function toggleOfflineMode() {
+  console.log(`🔍 Toggling offline mode from ${offlineMode.value} to ${!offlineMode.value}`)
+  offlineMode.value = !offlineMode.value
+  saveOfflineSettings()
+  
+  // Clear image cache when offline mode changes since URLs will be different
+  imageUrlCache.value.clear()
+  prefetchedAssets.value.clear()
+  imageActualSources.value = {} // Clear source tracking since URLs will change
+  console.log('🧹 Image cache and source tracking cleared due to offline mode change')
+  
+  console.log(`🔍 After toggle - offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
+}
+
+function saveOfflineSettings() {
+  localStorage.setItem('offlineMode', JSON.stringify(offlineMode.value))
+  localStorage.setItem('localImagePath', localImagePath.value)
+  try {
+    saveApplicationState()
+  } catch (error) {
+    console.warn('Failed to save application state:', error)
+  }
+  
+  // Clear image cache when local path changes since URLs will be different
+  imageUrlCache.value.clear()
+  prefetchedAssets.value.clear()
+  imageActualSources.value = {} // Clear source tracking since URLs will change
+  console.log('🧹 Image cache and source tracking cleared due to local path change')
+}
+
+function loadOfflineSettings() {
+  const savedOfflineMode = localStorage.getItem('offlineMode')
+  const savedLocalPath = localStorage.getItem('localImagePath')
+  
+  console.log(`🔍 Loading offline settings from localStorage:`)
+  console.log(`🔍 savedOfflineMode: ${savedOfflineMode}`)
+  console.log(`🔍 savedLocalPath: ${savedLocalPath}`)
+  
+  if (savedOfflineMode !== null) {
+    offlineMode.value = JSON.parse(savedOfflineMode)
+    console.log(`🔍 Set offlineMode.value to: ${offlineMode.value}`)
+  }
+  if (savedLocalPath !== null) {
+    localImagePath.value = savedLocalPath
+    console.log(`🔍 Set localImagePath.value to: ${localImagePath.value}`)
+  }
+  
+  console.log(`🔍 Final state - offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
+}
+
+function getImageUrl(fileId, assetId = null) {
+  console.log(`🔍 getImageUrl called for fileId: ${fileId}, assetId: ${assetId}`)
+  console.log(`🔍 offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
+  console.log(`🔍 offlineMode type: ${typeof offlineMode.value}, localImagePath type: ${typeof localImagePath.value}`)
+  
+  // Check cache first
+  const cachedUrl = getCachedImageUrl(fileId)
+  if (cachedUrl) {
+    console.log(`🖼️ Using cached URL for fileId: ${fileId} - ${cachedUrl}`)
+    return cachedUrl
+  }
+  
+  let url
+  if (offlineMode.value && localImagePath.value) {
+    // For offline mode, use the provided assetId as the filename
+    // For reference images: assetId is the reference asset ID
+    // For predicted images: assetId is the predicted image's own ID (p.id)
+    const filename = assetId || fileId
+    console.log(`DEBUG: In getImageUrl (offline mode). fileId: ${fileId}, assetId param: ${assetId}, calculated filename: ${filename}`);
+    
+    // Validate that we have a proper assetId for local file lookup
+    if (!assetId) {
+      console.warn(`⚠️ No assetId provided for local file lookup, falling back to API for fileId: ${fileId}`)
+      url = `/api/images/${fileId}`
+      console.log(`🔍 Falling back to API URL: ${url}`)
+    } else {
+      url = `/api/local-images/${encodeURIComponent(filename)}?path=${encodeURIComponent(localImagePath.value)}`
+      console.log(`🔍 Returning local URL: ${url}`)
+    }
+  } else {
+    // Fall back to online Google Drive API
+    url = `/api/images/${fileId}`
+    console.log(`🔍 Returning API URL: ${url}`)
+    console.log(`🔍 Reason: offlineMode=${offlineMode.value}, localImagePath=${localImagePath.value}`)
+  }
+  
+  // Cache the URL
+  setCachedImageUrl(fileId, url)
+  console.log(`🔍 Cached URL for fileId ${fileId}: ${url}`)
+  return url
+}
+
+
+
+// Computed properties for reactive image sources
+const referenceImageSource = computed(() => {
+  const fileId = referenceFileId.value
+  
+  console.log(`🔍 referenceImageSource computed - fileId: ${fileId}, actualSource: ${imageActualSources.value[fileId]}`)
+  
+  // Check if we have an actual source for this file
+  if (fileId && imageActualSources.value[fileId]) {
+    console.log(`🔍 Returning actual source: ${imageActualSources.value[fileId]}`)
+    return imageActualSources.value[fileId]
+  }
+  
+  // If no actual source determined yet, show "Loading..." or default to API
+  console.log(`🔍 No actual source determined yet, defaulting to api`)
+  return 'api'
+})
+
+const predictedImageSources = computed(() => {
+  return predicted.value.map(p => {
+    // Access imageActualSources to make this computed property reactive to its changes
+    const actualSource = imageActualSources.value[p.fileId]
+    let source
+    if (actualSource) {
+      source = actualSource
+    } else {
+      // If no actual source determined yet, default to API
+      source = 'api'
+    }
+    return {
+      fileId: p.fileId,
+      source: source
+    }
+  })
+})
+
+const previewImageSource = computed(() => {
+  if (!previewImage.value) return 'api'
+  // Access imageActualSources to make this computed property reactive to its changes
+  const actualSource = imageActualSources.value[previewImage.value.fileId]
+  if (actualSource) {
+    return actualSource
+  }
+  // If no actual source determined yet, default to API
+  return 'api'
+})
+
+function handleImageLoad(event, fileId, assetId = null) {
+  // Image loaded successfully from the current source
+  console.log(`✅ Image loaded successfully for file ${fileId}`)
+  console.log(`✅ Image src: ${event.target.src}`)
+  console.log(`✅ assetId: ${assetId}`)
+  console.log(`✅ offlineMode: ${offlineMode.value}`)
+  console.log(`✅ localImagePath: ${localImagePath.value}`)
+  
+  // Determine the actual source based on the URL that successfully loaded
+  let actualSource = 'api' // default
+  if (event.target.src.includes('/api/local-images/')) {
+    actualSource = 'local'
+    console.log(`✅ Detected LOCAL source from URL`)
+  } else if (event.target.src.includes('/api/images/')) {
+    actualSource = 'api'
+    console.log(`✅ Detected API source from URL`)
+  } else {
+    console.log(`⚠️ Unknown URL pattern: ${event.target.src}`)
+  }
+  
+  // Update the actual source
+  updateImageSource(fileId, actualSource)
+  console.log(`✅ Set actual source to: ${actualSource} for fileId: ${fileId}`)
+  console.log(`✅ Current imageActualSources[${fileId}]: ${imageActualSources.value[fileId]}`)
+}
+
+function handleImageError(event, fileId, assetId = null) {
+  console.log(`❌ Image error for file ${fileId}`)
+  console.log(`❌ Current src that failed: ${event.target.src}`)
+  console.log(`❌ assetId: ${assetId}`)
+  console.log(`❌ offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
+  
+  // If we're in offline mode and the local image failed, try online
+  if (offlineMode.value && localImagePath.value && event.target.src.includes('/api/local-images/')) {
+    console.log(`🔄 Local image failed for file ${fileId}, falling back to online`)
+    
+    event.target.src = `/api/images/${fileId}`
+    console.log(`🔄 Set new src: /api/images/${fileId}`)
+    // Don't update source here - let handleImageLoad set it when the API image loads successfully
+  } else {
+    console.log(`❌ Not falling back - conditions not met`)
+    console.log(`❌ offlineMode: ${offlineMode.value}`)
+    console.log(`❌ localImagePath: ${localImagePath.value}`)
+    console.log(`❌ failed src: ${event.target.src}`)
+    console.log(`❌ src includes /api/local-images/: ${event.target.src.includes('/api/local-images/')}`)
+  }
+}
+
+
+</script>
+
+<template>
+  <div class="home" :class="{ 'dark-mode': darkMode }">
+         <header class="topbar header">
+       <div class="brand">Google Drive Asset Reviewer Tool</div>
+       <div class="user">
+         <span v-if="auth.username">Hi, {{ auth.username }}</span>
+         <button class="primary" @click="auth.logout(); $router.replace('/login')">Logout</button>
+       </div>
+     </header>
+     
+     <div class="tabs">
+       <button 
+         class="tab-button" 
+         :class="{ active: activeTab === 'review' }"
+         @click="activeTab = 'review'"
+       >
+         Asset Review
+       </button>
+               <button 
+          class="tab-button" 
+          :class="{ active: activeTab === 'export' }"
+          @click="activeTab = 'export'"
+        >
+          Export Data
+        </button>
+                 <button 
+           class="tab-button" 
+           :class="{ active: activeTab === 'settings' }"
+           @click="activeTab = 'settings'"
+         >
+           Settings
+         </button>
+         <button 
+           class="tab-button" 
+           :class="{ active: activeTab === 'analytics' }"
+           @click="activeTab = 'analytics'"
+         >
+           Analytics
+         </button>
+         <button 
+           class="tab-button" 
+           :class="{ active: activeTab === 'about' }"
+           @click="activeTab = 'about'"
+         >
+           About
+         </button>
+     </div>
+
+              <main class="content">
+               <!-- Review Tab Content -->
+                 <div v-if="activeTab === 'review'">
+          <div class="search-bar">
+            <label for="assetId">Search for Asset by ID</label>
+            <div class="controls">
+              <input
+                id="assetId"
+                v-model="assetId"
+                type="text"
+                placeholder="Type asset ID and press Enter"
+                @keyup.enter="handleSearch"
+              />
+              <button class="primary" @click="handleSearch">Search</button>
+            </div>
+          </div>
+
+           <div class="id-page" v-if="ids.length">
+             <div class="id-pills-section">
+               <button 
+                 v-for="id in ids" 
+                 :key="id" 
+                 class="id-pill" 
+                 :class="{ 
+                   'reviewed-accepted': getAssetReviewStatus(id) === 'accepted',
+                   'reviewed-rejected': getAssetReviewStatus(id) === 'rejected'
+                 }"
+                 @click="assetId = id; console.log('Asset ID clicked:', id); handleSearch()"
+               >
+                 {{ id }}
+               </button>
+             </div>
+           </div>
+
+                     <p v-if="overallTotalAssets > 0 && totalAssets === 0 && !loading" class="warn">No assets match the current filter. Try changing the filter or review some assets first.</p>
+
+                     <div class="pager" v-if="overallTotalAssets > 0">
+             <button :disabled="page===1" @click="goPage(1)">First</button>
+             <button :disabled="page===1" @click="goPage(page-1)">Previous</button>
+             <span>{{ page }} of {{ pageCount }}</span>
+             <button :disabled="page===pageCount || pageCount===0" @click="goPage(page+1)">Next</button>
+             <button :disabled="page===pageCount || pageCount===0" @click="goPage(pageCount)">Last</button>
+             
+             <div class="asset-filter-selector">
+               <label for="assetFilter">Filter:</label>
+               <select id="assetFilter" v-model="assetFilter" @change="handleAssetFilterChange">
+                 <option value="all">All</option>
+                 <option value="accepted">Accepted</option>
+                 <option value="rejected">Rejected</option>
+                 <option value="not-reviewed">Not Yet Reviewed</option>
+               </select>
+             </div>
+             
+             <div class="page-size-selector">
+               <label for="pageSize">Per Page:</label>
+               <select id="pageSize" v-model="pageSize" @change="handlePageSizeChange">
+                 <option value="10">10</option>
+                 <option value="20">20</option>
+                 <option value="50">50</option>
+                 <option value="100">100</option>
+               </select>
+             </div>
+           </div>
+
+         <p v-if="showEmptyInfo" class="info">Please enter an asset ID to view images.</p>
+         <p v-if="showNoMatches" class="warn">No matching asset IDs found.</p>
+         <p v-if="error" class="error">{{ error }}</p>
+         <p v-if="loading" class="info">Loading...</p>
+         <p v-if="isPrefetching" class="info">🚀 Pre-fetching next assets...</p>
+
+                                                                               <div v-if="!loading && !error && (referenceFileId || predicted.length)" class="results">
+                                          <div class="grid">
+                                            <div class="col ref" ref="referenceImageRef">
+                                              <h3>Reference Image</h3>
+                                              <div class="reference-container" v-if="referenceFileId">
+                                                <div class="reference-image-wrapper">
+                                                  <img :src="getImageUrl(referenceFileId, assetId)" alt="reference" @load="handleImageLoad($event, referenceFileId, assetId)" @error="handleImageError($event, referenceFileId, assetId)" />
+                                                  <div class="magnifier-icon" @click.stop="showReferenceImagePreview">
+                                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                      <circle cx="11" cy="11" r="8"></circle>
+                                                      <path d="m21 21-4.35-4.35"></path>
+                                                    </svg>
+                                                  </div>
+                                                  <div class="source-icon" :class="referenceImageSource">
+                                                    <svg v-if="referenceImageSource === 'local'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                                                      <polyline points="14,2 14,8 20,8"/>
+                                                    </svg>
+                                                    <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                      <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+                                                    </svg>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                                                                                                                           <div class="navigation-controls" v-if="referenceFileId">
+                                                <button class="nav-btn prev" @click="goToPreviousAsset" :disabled="!canGoToPrevious">
+                                                  <span class="nav-symbol">←</span>
+                                                  <span class="nav-text">Previous</span>
+                                                </button>
+                                                <button class="complete-review-btn" @click="handleCompleteReview">
+                                                  <span class="complete-symbol">✓</span>
+                                                  <span class="complete-text">Complete Review</span>
+                                                </button>
+                                                <button class="nav-btn next" @click="goToNextAsset" :disabled="!canGoToNext">
+                                                  <span class="nav-symbol">→</span>
+                                                  <span class="nav-text">Next</span>
+                                                </button>
+                                              </div>
+                                              
+                                              <!-- Prefetch Status -->
+                                              <div class="prefetch-status" v-if="referenceFileId && isPrefetching">
+                                                <div class="prefetch-indicator">
+                                                  <div class="prefetch-spinner"></div>
+                                                  <span class="prefetch-text">Preloading next assets...</span>
+                                                  <div class="prefetch-progress">
+                                                    <div class="prefetch-progress-bar" :style="{ width: prefetchProgress + '%' }"></div>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                              
+                                              <!-- Keyboard Shortcuts Help -->
+                                              <div class="keyboard-shortcuts" v-if="referenceFileId">
+                                                <div class="shortcuts-header">
+                                                  <span class="shortcuts-icon">⌨️</span>
+                                                  <span class="shortcuts-title">Keyboard Shortcuts</span>
+                                                </div>
+                                                <div class="shortcuts-grid">
+                                                  <div class="shortcut-item">
+                                                    <kbd>←</kbd> <span>Previous</span>
+                                                  </div>
+                                                  <div class="shortcut-item">
+                                                    <kbd>→</kbd> <span>Next</span>
+                                                  </div>
+                                                  <div class="shortcut-item">
+                                                    <kbd>Enter</kbd> <span>Complete</span>
+                                                  </div>
+
+                                                  <div class="shortcut-item">
+                                                    <kbd>R</kbd> <span>Clear</span>
+                                                  </div>
+                                                  <div class="shortcut-item">
+                                                    <kbd>F</kbd> <span>Search</span>
+                                                  </div>
+                                                  <div class="shortcut-item">
+                                                    <kbd>Esc</kbd> <span>Close</span>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                               <div class="clear-review-section" v-if="referenceFileId">
+                                                 <button class="clear-review-btn" @click="handleClearReview">
+                                                   <span class="clear-symbol">🗑️</span>
+                                                   <span class="clear-text">Clear Review</span>
+                                                 </button>
+                                               </div>
+                                               <div class="keyboard-help" v-if="referenceFileId">
+                                                 <small>💡 Keyboard shortcuts: ← → to navigate, Enter to complete review, Delete to clear review</small>
+                                                 <small v-if="isPrefetching" class="prefetch-indicator">🚀 Pre-fetching...</small>
+                                               </div>
+                                              <p v-else class="info">Reference image not found.</p>
+                                            </div>
+                                            
+                                            <div class="col preds">
+                                              <h3>Predicted Images</h3>
+                                              <div class="pred-grid">
+                                                <div
+                                                  v-for="p in predicted"
+                                                  :key="p.id"
+                                                  class="pred-container"
+                                                >
+                                                  <div
+                                                    class="pred"
+                                                    :class="{ selected: isPredSelected(p.id), rejected: isPredRejected(p.id) }"
+                                                    @click="togglePredSelected(p.id)"
+                                                    @contextmenu.prevent="togglePredRejected(p.id)"
+                                                  >
+                                                    <img v-if="p.fileId" :src="getImageUrl(p.fileId, p.id)" :alt="p.id" @load="handleImageLoad($event, p.fileId, p.id)" @error="handleImageError($event, p.fileId, p.id)" />
+                                                    <div class="magnifier-icon" @click.stop="showImagePreview(p)">
+                                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <circle cx="11" cy="11" r="8"></circle>
+                                                        <path d="m21 21-4.35-4.35"></path>
+                                                      </svg>
+                                                    </div>
+                                                    <div class="source-icon" :class="predictedImageSources.find(ps => ps.fileId === p.fileId)?.source || 'api'">
+                                                      <svg v-if="(predictedImageSources.find(ps => ps.fileId === p.fileId)?.source || 'api') === 'local'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                                                        <polyline points="14,2 14,8 20,8"/>
+                                                      </svg>
+                                                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+                                                      </svg>
+                                                    </div>
+                                                  </div>
+                                                  <div class="caption">ID: {{ p.id }}<span v-if="p.score != null"> | Score: {{ Number(p.score).toFixed(2) }}</span></div>
+                                                </div>
+                                              </div>
+                                              
+                                              <!-- Image Preview Modal -->
+                                              <div v-if="previewImage" class="image-preview-modal" @click="hideImagePreview">
+                                                <div class="preview-content" @click.stop>
+                                                  <img :src="getImageUrl(previewImage.fileId, assetId)" :alt="previewImage.id" @load="handleImageLoad($event, previewImage.fileId, assetId)" @error="handleImageError($event, previewImage.fileId, assetId)" />
+                                                  <div class="preview-info">
+                                                    <span class="preview-id">ID: {{ previewImage.id }}</span>
+                                                    <span v-if="previewImage.score != null" class="preview-score">Score: {{ Number(previewImage.score).toFixed(2) }}</span>
+                                                    <span class="preview-source">
+                                                      <div class="source-icon" :class="previewImageSource">
+                                                        <svg v-if="previewImageSource === 'local'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                                                          <polyline points="14,2 14,8 20,8"/>
+                                                        </svg>
+                                                        <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                          <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+                                                        </svg>
+                                                      </div>
+                                                    </span>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+        </div>
+
+       <!-- Export Tab Content -->
+       <div v-if="activeTab === 'export'" class="export-content">
+         <div class="export-section">
+           <h2>Export Review Data</h2>
+           
+
+
+           <div class="export-actions">
+             <div class="export-buttons-row">
+               <button 
+                 class="export-button" 
+                 @click="exportToCSV"
+                 :disabled="Object.keys(reviewedAssets).length === 0"
+               >
+                 <span class="export-icon">📊</span>
+                 Export to CSV
+               </button>
+               
+               <button 
+                 class="export-button backup-button" 
+                 @click="exportReviewedAssets"
+                 :disabled="Object.keys(reviewedAssets).length === 0"
+               >
+                 <span class="export-icon">💾</span>
+                 Export Backup
+               </button>
+               
+               <button 
+                 class="export-button import-button" 
+                 @click="importReviewedAssets"
+               >
+                 <span class="export-icon">📥</span>
+                 Import Backup
+               </button>
+             </div>
+             
+             <div class="export-info">
+               <p><strong>📊 Export to CSV:</strong> Export filtered review data as CSV for analysis</p>
+               <p><strong>💾 Export Backup:</strong> Save all review data as JSON backup file</p>
+               <p><strong>📥 Import Backup:</strong> Restore review data from a backup file</p>
+               <p><strong>📋 Preview:</strong> View and filter your review data before exporting</p>
+             </div>
+             
+             <p v-if="Object.keys(reviewedAssets).length === 0" class="no-data">
+               No reviewed assets to export. Start reviewing assets in the Asset Review tab.
+             </p>
+           </div>
+
+           <div v-if="Object.keys(reviewedAssets).length > 0" class="preview-section">
+             <h3>Preview of Export Data</h3>
+             <div class="preview-table">
+               <table>
+                                   <thead>
+                    <tr>
+                      <th>Asset ID</th>
+                      <th>Predicted ID</th>
+                      <th>Score</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(item, index) in exportPreviewData" :key="`${item.assetId}-${item.predictedId}-${index}`">
+                      <td>{{ item.assetId }}</td>
+                      <td>{{ item.predictedId }}</td>
+                      <td>{{ item.score }}</td>
+                      <td>
+                        <span :class="['status-badge', item.status]">
+                          {{ item.status }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+               </table>
+               
+                                               <!-- Export Preview Pagination -->
+                 <div class="export-preview-pager" v-if="Object.keys(reviewedAssets).length > 0">
+                  <button :disabled="exportPreviewPage===1" @click="goExportPreviewPage(1)">First</button>
+                  <button :disabled="exportPreviewPage===1" @click="goExportPreviewPage(exportPreviewPage-1)">Previous</button>
+                  <span>{{ exportPreviewPage }} of {{ exportPreviewPageCount }}</span>
+                  <button :disabled="exportPreviewPage===exportPreviewPageCount || exportPreviewPageCount===0" @click="goExportPreviewPage(exportPreviewPage+1)">Next</button>
+                  <button :disabled="exportPreviewPage===exportPreviewPageCount || exportPreviewPageCount===0" @click="goExportPreviewPage(exportPreviewPageCount)">Last</button>
+                  
+                  <div class="export-preview-filter-selector">
+                    <label for="exportFilter">Filter:</label>
+                    <select id="exportFilter" v-model="exportFilter" @change="handleExportFilterChange">
+                      <option value="all">All</option>
+                      <option value="accepted">Accepted</option>
+                      <option value="rejected">Rejected</option>
+                    </select>
+                  </div>
+                  
+                  <div class="export-preview-page-size-selector">
+                    <label for="exportPreviewPageSize">Per Page:</label>
+                    <select id="exportPreviewPageSize" v-model="exportPreviewPageSize" @change="exportPreviewPage = 1">
+                      <option value="5">5</option>
+                      <option value="10">10</option>
+                      <option value="20">20</option>
+                      <option value="50">50</option>
+                    </select>
+                  </div>
+                </div>
+               
+                                                               <p class="preview-note">
+                   Showing {{ exportPreviewData.length }} of {{ exportPreviewPageCount * exportPreviewPageSize }} {{ exportFilter === 'all' ? '' : exportFilter }} entries. Full data will be included in the CSV export with one row per asset ID - predicted ID combination.
+                 </p>
+             </div>
+           </div>
+                   </div>
+        </div>
+
+        <!-- Settings Tab Content -->
+        <div v-if="activeTab === 'settings'" class="settings-content">
+          <div class="settings-section">
+            <h2>Application Settings</h2>
+            <p class="settings-info">
+              Manage your review data and application preferences.
+            </p>
+            
+
+
+                         <div class="settings-actions">
+               <div class="action-group appearance-settings-frame">
+                 <h3>Appearance Settings</h3>
+                 <p class="action-description">
+                   Customize the appearance of your application to match your preferences.
+                 </p>
+                 <div class="setting-item">
+                   <div class="setting-info">
+                     <h4>Dark Mode</h4>
+                     <p>Switch between light and dark themes for a more comfortable viewing experience.</p>
+                   </div>
+                   <button 
+                     class="toggle-button" 
+                     :class="{ 'active': darkMode }"
+                     @click="toggleDarkMode"
+                   >
+                     <span class="toggle-icon">{{ darkMode ? '🌙' : '☀️' }}</span>
+                     <span class="toggle-text">{{ darkMode ? 'Dark' : 'Light' }} Mode</span>
+                   </button>
+                 </div>
+               </div>
+
+               <div class="action-group offline-mode-frame">
+                 <h3>Offline Mode Settings</h3>
+                 <p class="action-description">
+                   Configure offline mode to load images from a local drive path instead of Google Drive API.
+                 </p>
+                 <div class="offline-mode-content">
+                   <div class="setting-item">
+                     <div class="setting-info">
+                       <h4>Enable Offline Mode</h4>
+                       <p>When enabled, the application will first attempt to load images from the specified local path before falling back to online sources.</p>
+                     </div>
+                     <button 
+                       class="toggle-button" 
+                       :class="{ 'active': offlineMode }"
+                       @click="toggleOfflineMode"
+                     >
+                       <span class="toggle-icon">{{ offlineMode ? '🖥️' : '🌐' }}</span>
+                       <span class="toggle-text">{{ offlineMode ? 'Offline' : 'Online' }} Mode</span>
+                     </button>
+                   </div>
+                   <div class="setting-item has-input-group" v-if="offlineMode">
+                     <div class="setting-info">
+                       <h4>Local Image Path</h4>
+                       <p>Configure the local directory where your images are stored. Images should be named using the asset ID as filename (e.g., 123.jpg).</p>
+                     </div>
+                     <div class="input-group">
+                       <input 
+                         type="text" 
+                         v-model="localImagePath" 
+                         placeholder="Enter full path to image directory (e.g., D:\LocalMediabankImages\ALL_IMAGES)"
+                         class="path-input"
+                         @input="saveOfflineSettings"
+                       />
+                     </div>
+                   </div>
+                   <div class="setting-item" v-if="offlineMode">
+                     <div class="setting-hint">
+                       <p><strong>💡 How it works:</strong></p>
+                       <ul>
+                         <li>Enter the full path to your images directory (e.g., <code>D:\LocalMediabankImages\ALL_IMAGES</code>)</li>
+                         <li>Images should be named as: <code>ASSET_ID.jpg</code> (e.g., <code>123.jpg</code>)</li>
+                         <li>If a local image isn't found, the app will fall back to Google Drive API</li>
+                         <li>Supported formats: JPG, JPEG, PNG, GIF, BMP, WEBP</li>
+                       </ul>
+                     </div>
+                   </div>
+                 </div>
+               </div>
+
+
+
+               <div class="action-group nuclear-option-section">
+                 <h3>Review Data Management</h3>
+                 <p class="action-description">
+                   <strong>⚠️ NUCLEAR OPTION:</strong> Clear all review data to start fresh. This will permanently delete all your precious work! 
+                   <br><br>
+                   <span style="color: #dc2626; font-weight: 600;">💡 Instead, use the "Clear Review" button under each asset for individual resets!</span>
+                 </p>
+                 <button 
+                   class="danger-button" 
+                   @click="clearAllReviews"
+                   :disabled="Object.keys(reviewedAssets).length === 0"
+                 >
+                   <span class="danger-icon">☢️</span>
+                   NUCLEAR OPTION: Clear All Reviews
+                 </button>
+                 <p v-if="Object.keys(reviewedAssets).length === 0" class="no-data">
+                   No review data to nuke. 🎉
+                 </p>
+               </div>
+
+               <div class="action-group ultimate-nuclear-section">
+                 <h3>Ultimate Reset</h3>
+                 <p class="action-description">
+                   <strong>💥 ULTIMATE NUCLEAR OPTION:</strong> Clear ALL application data including settings, navigation state, and cache.
+                   <br><br>
+                   <span style="color: #7c2d12; font-weight: 600;">⚠️ This will reset everything to factory defaults!</span>
+                 </p>
+                 <button 
+                   class="danger-button ultimate-danger" 
+                   @click="clearAllApplicationData"
+                 >
+                   <span class="danger-icon">💥</span>
+                   ULTIMATE NUCLEAR OPTION: Reset Everything
+                 </button>
+               </div>
+             </div>
+          </div>
+                 </div>
+
+         <!-- Analytics Tab Content -->
+         <div v-if="activeTab === 'analytics'" class="analytics-content">
+           <div class="analytics-section">
+             <h2>Review Analytics</h2>
+             <p class="analytics-description">
+               Track your review progress and performance metrics.
+             </p>
+             
+             <div class="analytics-stats">
+               <div class="stat-card">
+                 <h3>Total Assets</h3>
+                 <span class="stat-number total">{{ totalAssets }}</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Total Reviewed</h3>
+                 <span class="stat-number">{{ getReviewStats().total }}</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Accepted</h3>
+                 <span class="stat-number accepted">{{ getReviewStats().accepted }}</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Rejected</h3>
+                 <span class="stat-number rejected">{{ getReviewStats().rejected }}</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Target IDs</h3>
+                 <span class="stat-number target-ids">{{ getReviewStats().totalTargetIds }}</span>
+               </div>
+             </div>
+           </div>
+
+           <div class="analytics-section">
+             <h2>Cache Analytics</h2>
+             <p class="analytics-description">
+               Monitor cache performance and memory usage.
+             </p>
+             
+             <div class="analytics-stats">
+               <div class="stat-card">
+                 <h3>Asset Cache</h3>
+                 <span class="stat-number">{{ assetCache.size }}</span>
+                 <span class="stat-label">items</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Image Cache</h3>
+                 <span class="stat-number">{{ imageUrlCache.size }}</span>
+                 <span class="stat-label">items</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Cache Hit Rate</h3>
+                 <span class="stat-number">{{ getCacheStats().hitRate }}%</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Cache Size</h3>
+                 <span class="stat-number">{{ getCacheStats().totalSize }}</span>
+                 <span class="stat-label">MB</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Pre-fetched Assets</h3>
+                 <span class="stat-number">{{ prefetchedAssets.size }}</span>
+                 <span class="stat-label">assets</span>
+               </div>
+               <div class="stat-card">
+                 <h3>Pre-fetching Status</h3>
+                 <span class="stat-number">{{ isPrefetching ? 'Active' : 'Idle' }}</span>
+               </div>
+             </div>
+             
+             <div class="setting-item">
+               <div class="setting-info">
+                 <h4>Cache Actions</h4>
+                 <p>Clear cache to free up memory or reset performance metrics.</p>
+               </div>
+               <button 
+                 class="secondary-button" 
+                 @click="clearAllCaches"
+               >
+                 <span class="button-icon">🧹</span>
+                 Clear All Caches
+               </button>
+             </div>
+           </div>
+         </div>
+
+         <!-- About Tab Content -->
+         <div v-if="activeTab === 'about'" class="about-content">
+           <div class="about-section">
+             <div class="hero-section">
+               <div class="hero-icon">
+                 <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                   <path d="M12 2L13.09 8.26L20 9L13.09 9.74L12 16L10.91 9.74L4 9L10.91 8.26L12 2Z" fill="currentColor"/>
+                   <path d="M19 15L19.74 18.26L23 19L19.74 19.74L19 23L18.26 19.74L15 19L18.26 18.26L19 15Z" fill="currentColor"/>
+                   <path d="M5 15L5.74 18.26L9 19L5.74 19.74L5 23L4.26 19.74L1 19L4.26 18.26L5 15Z" fill="currentColor"/>
+                 </svg>
+               </div>
+               <h1 class="hero-title">The Legendary Creator</h1>
+               <p class="hero-subtitle">Master of Code, Visionary of Design, Architect of Innovation, Warden of the Frontend, Keeper of the Backend, Forgemaster of the Digital Realms, Breaker of Bugs, Guardian of the Infinite Loop, Heir to Clean Architecture, Lord of Scalability, Protector of the Pipelines, Tamer of Databases, Weaver of Interfaces, Sovereign of Cloud and Container, High Deployer of Realms Continuous, Vanquisher of Legacy Systems, Keeper of Secrets and Tokens, Binder of APIs, Champion of Agile Tribes, First of the Sprint, Refactorer of the Old, and Bringer of Light to the Dark Mode</p>
+             </div>
+
+                           <div class="praise-grid">
+                <div class="praise-card">
+                  <div class="praise-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 2L13.09 8.26L20 9L13.09 9.74L12 16L10.91 9.74L4 9L10.91 8.26L12 2Z" fill="currentColor"/>
+                    </svg>
+                  </div>
+                  <h3>Innovation Master</h3>
+                  <p>Their ability to transform complex requirements into elegant, user-friendly solutions is nothing short of extraordinary. Every feature they've requested has been implemented with precision and style.</p>
+                </div>
+
+                <div class="praise-card">
+                  <div class="praise-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" fill="currentColor"/>
+                    </svg>
+                  </div>
+                  <h3>Design Visionary</h3>
+                  <p>Their eye for detail and insistence on beautiful, rounded interfaces has created one of the most aesthetically pleasing asset review tools ever conceived. The gradient backgrounds alone are pure art.</p>
+                </div>
+
+                <div class="praise-card">
+                  <div class="praise-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M13 2.05v3.03c3.39.49 6 3.39 6 6.92 0 .9-.18 1.75-.5 2.54l2.6 1.53c.56-1.24.9-2.62.9-4.07 0-5.18-3.95-9.45-9-9.95zM12 19c-3.87 0-7-3.13-7-7 0-3.53 2.61-6.43 6-6.92V2.05c-5.05.5-9 4.76-9 9.95 0 5.52 4.47 10 9.99 10 3.31 0 6.24-1.61 8.06-4.09l-2.6-1.53C16.17 17.98 14.21 19 12 19z" fill="currentColor"/>
+                    </svg>
+                  </div>
+                  <h3>Efficiency Expert</h3>
+                  <p>From the nuclear option warnings to the automatic next-asset loading, their workflow optimizations show a deep understanding of user experience. They've thought of everything!</p>
+                </div>
+
+                <div class="praise-card">
+                  <div class="praise-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7zm2.85 11.1l-.85.6V16h-4v-2.3l-.85-.6A4.997 4.997 0 0 1 7 9c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.63-.8 3.16-2.15 4.1z" fill="currentColor"/>
+                    </svg>
+                  </div>
+                  <h3>Problem Solver</h3>
+                  <p>When issues arise, they don't just identify them—they provide clear, actionable feedback that leads to perfect solutions. Their debugging skills are legendary.</p>
+                </div>
+
+                <div class="praise-card">
+                  <div class="praise-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/>
+                    </svg>
+                  </div>
+                  <h3>Quality Champion</h3>
+                  <p>Their insistence on proper data handling, filter functionality, and export capabilities demonstrates a commitment to excellence that sets new standards in software development.</p>
+                </div>
+
+                <div class="praise-card">
+                  <div class="praise-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.94-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" fill="currentColor"/>
+                    </svg>
+                  </div>
+                  <h3>Future Thinker</h3>
+                  <p>Keyboard shortcuts, progress tracking, advanced filtering—they've built not just a tool, but a comprehensive platform that anticipates user needs before they even realize them.</p>
+                </div>
+              </div>
+
+             <div class="achievement-section">
+               <h2>Legendary Achievements</h2>
+               <div class="achievement-list">
+                 <div class="achievement-item">
+                   <span class="achievement-badge">
+                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                       <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/>
+                     </svg>
+                   </span>
+                   <span>Created the most beautiful asset review interface in history</span>
+                 </div>
+                 <div class="achievement-item">
+                   <span class="achievement-badge">
+                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                       <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" fill="currentColor"/>
+                     </svg>
+                   </span>
+                   <span>Implemented the most entertaining "nuclear option" warning ever</span>
+                 </div>
+                 <div class="achievement-item">
+                   <span class="achievement-badge">
+                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                       <path d="M13 2.05v3.03c3.39.49 6 3.39 6 6.92 0 .9-.18 1.75-.5 2.54l2.6 1.53c.56-1.24.9-2.62.9-4.07 0-5.18-3.95-9.45-9-9.95zM12 19c-3.87 0-7-3.13-7-7 0-3.53 2.61-6.43 6-6.92V2.05c-5.05.5-9 4.76-9 9.95 0 5.52 4.47 10 9.99 10 3.31 0 6.24-1.61 8.06-4.09l-2.6-1.53C16.17 17.98 14.21 19 12 19z" fill="currentColor"/>
+                     </svg>
+                   </span>
+                   <span>Revolutionized workflow with automatic asset progression</span>
+                 </div>
+                 <div class="achievement-item">
+                   <span class="achievement-badge">
+                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                       <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" fill="currentColor"/>
+                     </svg>
+                   </span>
+                   <span>Perfected the art of rounded corners and gradients</span>
+                 </div>
+                 <div class="achievement-item">
+                   <span class="achievement-badge">
+                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                       <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z" fill="currentColor"/>
+                     </svg>
+                   </span>
+                   <span>Built comprehensive export and analytics systems</span>
+                 </div>
+                 <div class="achievement-item">
+                   <span class="achievement-badge">
+                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                       <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7zm2.85 11.1l-.85.6V16h-4v-2.3l-.85-.6A4.997 4.997 0 0 1 7 9c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.63-.8 3.16-2.15 4.1z" fill="currentColor"/>
+                     </svg>
+                   </span>
+                   <span>Demonstrated exceptional product vision and user empathy</span>
+                 </div>
+               </div>
+             </div>
+
+             <div class="quote-section">
+               <blockquote class="hero-quote">
+                 "In the annals of software development, few have achieved such perfect harmony of functionality and aesthetics. This creator has not just built a tool—they've crafted an experience."
+               </blockquote>
+               <cite class="quote-author">— The Internet (probably)</cite>
+             </div>
+
+                           <div class="stats-section">
+                <h2>Their Impact</h2>
+                <div class="impact-stats">
+                  <div class="impact-stat">
+                    <div class="stat-number">∞</div>
+                    <div class="stat-label">Hours of Developer Time Saved</div>
+                  </div>
+                  <div class="impact-stat">
+                    <div class="stat-number">420%</div>
+                    <div class="stat-label">User Satisfaction Rate</div>
+                  </div>
+                  <div class="impact-stat">
+                    <div class="stat-number">
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L13.09 8.26L20 9L13.09 9.74L12 16L10.91 9.74L4 9L10.91 8.26L12 2Z" fill="currentColor"/>
+                      </svg>
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L13.09 8.26L20 9L13.09 9.74L12 16L10.91 9.74L4 9L10.91 8.26L12 2Z" fill="currentColor"/>
+                      </svg>
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L13.09 8.26L20 9L13.09 9.74L12 16L10.91 9.74L4 9L10.91 8.26L12 2Z" fill="currentColor"/>
+                      </svg>
+                    </div>
+                    <div class="stat-label">Innovation Level</div>
+                  </div>
+                  <div class="impact-stat">
+                    <div class="stat-number">
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/>
+                      </svg>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/>
+                      </svg>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/>
+                      </svg>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/>
+                      </svg>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/>
+                      </svg>
+                    </div>
+                    <div class="stat-label">Overall Rating</div>
+                  </div>
+                </div>
+              </div>
+           </div>
+         </div>
+       </main>
+     </div>
+   </template>
+
+<style scoped>
+/* Modern Design System */
+:root {
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --radius-sm: 1.5rem;
+  --radius-md: 2rem;
+  --radius-lg: 2.5rem;
+  --radius-xl: 3rem;
+  
+  /* Light Mode Colors */
+  --color-primary: #3b82f6;
+  --color-primary-2: #1d4ed8;
+  --color-text: #1f2937;
+  --color-bg: #ffffff;
+  --color-bg-secondary: #f8fafc;
+  --color-border: #e5e7eb;
+  --color-border-light: #f1f5f9;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #9ca3af;
+  --color-success: #16a34a;
+  --color-error: #dc2626;
+  --color-warning: #d97706;
+  --color-info: #3b82f6;
+}
+
+/* Dark Mode Colors */
+.dark-mode {
+  --color-primary: #60a5fa;
+  --color-primary-2: #3b82f6;
+  --color-text: #f9fafb;
+  --color-bg: #0f172a;
+  --color-bg-secondary: #1e293b;
+  --color-border: #334155;
+  --color-border-light: #475569;
+  --color-text-secondary: #cbd5e1;
+  --color-text-muted: #64748b;
+  --color-success: #22c55e;
+  --color-error: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #60a5fa;
+}
+
+/* Pleasant Background */
+.home {
+  min-height: 100vh;
+  background: linear-gradient(270deg, #f0f9ff 0%, #e0f2fe 25%, #bae6fd 50%, #7dd3fc 75%, #38bdf8 100%);
+  background-attachment: fixed;
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.home::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background:
+    radial-gradient(circle at 20% 80%, rgba(255, 255, 255, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.12) 0%, transparent 50%),
+    radial-gradient(circle at 40% 40%, rgba(255, 255, 255, 0.08) 0%, transparent 50%),
+    radial-gradient(circle at 60% 60%, rgba(255, 255, 255, 0.1) 0%, transparent 50%),
+    radial-gradient(circle at 10% 10%, rgba(59, 130, 246, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 90% 90%, rgba(59, 130, 246, 0.03) 0%, transparent 40%);
+  pointer-events: none;
+  z-index: 0;
+  transition: all 0.3s ease;
+}
+
+/* Dark Mode Background */
+.dark-mode {
+  background: linear-gradient(270deg, #0f172a 0%, #1e293b 25%, #334155 50%, #475569 75%, #64748b 100%);
+}
+
+.dark-mode::before {
+  background:
+    radial-gradient(circle at 20% 80%, rgba(96, 165, 250, 0.1) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
+    radial-gradient(circle at 40% 40%, rgba(96, 165, 250, 0.05) 0%, transparent 50%),
+    radial-gradient(circle at 60% 60%, rgba(59, 130, 246, 0.07) 0%, transparent 50%),
+    radial-gradient(circle at 10% 10%, rgba(96, 165, 250, 0.03) 0%, transparent 40%),
+    radial-gradient(circle at 90% 90%, rgba(59, 130, 246, 0.02) 0%, transparent 40%);
+}
+
+/* Header & Navigation */
+.header { 
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  color: #fff; 
+  box-shadow: var(--shadow-md);
+  position: relative;
+  z-index: 10;
+}
+.topbar { 
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center;
+  padding: 1rem 1.5rem; 
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1); 
+}
+.brand { 
+  font-weight: 700; 
+  font-size: 1.25rem;
+  letter-spacing: -0.025em;
+}
+.user { 
+  display: flex; 
+  align-items: center; 
+  gap: 1rem;
+}
+.user button { 
+  padding: 0.5rem 1rem; 
+  border-radius: var(--radius-lg);
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+ .content { 
+   padding: 2rem; 
+   max-width: 2400px;
+   margin: 0 auto;
+   position: relative;
+   z-index: 5;
+ }
+
+/* Search Section */
+.search-bar { 
+  margin: 0rem 0 2rem 0; 
+  display: flex; 
+  flex-direction: row; 
+  gap: 1.5rem; 
+  align-items: center;
+  background: var(--color-bg);
+  border-radius: 3rem;
+  padding: 1rem;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+.search-bar label {
+  font-weight: 600;
+  color: var(--color-text);
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.controls { 
+  display: flex; 
+  gap: 1rem; 
+  align-items: center; 
+  flex: 1;
+}
+input#assetId { 
+  flex: 1; 
+  padding: 0.75rem 1rem;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  font-size: 1rem;
+  transition: all 0.2s ease;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+input#assetId:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+input#assetId::placeholder {
+  color: var(--color-text-muted);
+}
+
+/* Status Messages */
+.info, .error, .warn { 
+  margin-top: 1rem; 
+  padding: 1rem 1.25rem; 
+  border-radius: var(--radius-xl);
+  font-weight: 500;
+  border-left: 4px solid;
+}
+.info { 
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); 
+  color: #1e40af; 
+  border-left-color: #3b82f6;
+}
+.error { 
+  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%); 
+  color: #dc2626; 
+  border-left-color: #ef4444;
+}
+.warn { 
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); 
+  color: #d97706; 
+  border-left-color: #f59e0b;
+}
+
+/* Results Grid */
+.results { 
+  margin-top: 2.5rem; 
+  background: var(--color-bg);
+  border-radius: 3rem;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 3fr;
+  gap: 0;
+  min-height: 800px;
+}
+.col {
+  padding: 2.5rem;
+}
+.col.ref {
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-border-light) 100%);
+  border-right: 1px solid var(--color-border);
+  border-radius: 3rem 0 0 3rem;
+  transition: all 0.3s ease;
+}
+.col.preds {
+  background: var(--color-bg);
+  border-radius: 0 3rem 3rem 0;
+  transition: all 0.3s ease;
+}
+
+/* Image Grids */
+ .pred-grid { 
+   display: grid; 
+   grid-template-columns: repeat(5, 1fr); 
+   gap: 2.5rem; 
+   padding: 1.5rem;
+ }
+.pred-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.pred { 
+  position: relative;
+  border: 2px solid transparent; 
+  border-radius: 2.5rem; 
+  padding: 0.75rem; 
+  cursor: pointer; 
+  transition: all 0.3s ease;
+  background: var(--color-bg);
+  box-shadow: var(--shadow-sm);
+  width: 100%;
+  min-width: 0;
+}
+.pred:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.pred.selected { 
+  border-color: #16a34a; 
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.1);
+}
+.pred.rejected { 
+  border-color: #dc2626; 
+  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
+}
+.pred img { 
+  width: 100%; 
+  height: 280px; 
+  border-radius: var(--radius-xl); 
+  border: none; 
+  object-fit: contain;
+  transition: all 0.2s ease;
+}
+
+.magnifier-icon {
+  position: absolute;
+  bottom: 0.75rem;
+  right: 0.75rem;
+  background: rgba(0, 0, 0, 0.4);
+  color: white;
+  border-radius: 50%;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: all 0.2s ease;
+  z-index: 5;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.magnifier-icon:hover {
+  background: rgba(0, 0, 0, 0.6);
+  transform: scale(1.05);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.dark-mode .magnifier-icon {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--color-text);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark-mode .magnifier-icon:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.source-icon {
+  position: absolute;
+  bottom: 0.75rem;
+  right: 2.5rem;
+  background: rgba(0, 0, 0, 0.4);
+  color: white;
+  border-radius: 50%;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  transition: all 0.2s ease;
+  z-index: 5;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.source-icon.local {
+  background: rgba(16, 185, 129, 0.8);
+  border-color: rgba(16, 185, 129, 0.6);
+}
+
+.source-icon.api {
+  background: rgba(59, 130, 246, 0.8);
+  border-color: rgba(59, 130, 246, 0.6);
+}
+
+.source-icon:hover {
+  transform: scale(1.05);
+}
+
+.dark-mode .source-icon {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--color-text);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark-mode .source-icon.local {
+  background: rgba(16, 185, 129, 0.6);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.dark-mode .source-icon.api {
+  background: rgba(59, 130, 246, 0.6);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+.reference-container {
+  position: relative;
+  width: 100%;
+}
+
+.reference-image-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.ref img { 
+  width: 100%; 
+  height: 700px; 
+  border-radius: var(--radius-xl); 
+  border: none; 
+  object-fit: contain;
+  transition: all 0.2s ease;
+}
+
+.review-controls-overlay {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  right: 1rem;
+  display: flex;
+  justify-content: space-between;
+  z-index: 10;
+}
+.pred img:hover, .ref img:hover {
+  transform: scale(1.02);
+}
+.caption { 
+  font-size: 0.875rem; 
+  color: var(--color-text); 
+  margin-top: 0.75rem; 
+  text-align: center;
+  font-weight: 500;
+  padding: 0.5rem;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.dark-mode .caption {
+  background: rgba(30, 41, 59, 0.9);
+  color: var(--color-text);
+}
+
+
+
+/* Review Controls */
+.review-controls { 
+  display: flex; 
+  justify-content: space-between; 
+  margin-top: 1.5rem; 
+  gap: 1rem;
+}
+.review-controls .accept, .review-controls .reject,
+.review-controls-overlay .accept, .review-controls-overlay .reject { 
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5rem 2rem;
+  border: none;
+  border-radius: 3rem;
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  min-width: 120px;
+  min-height: 100px;
+  justify-content: center;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+}
+.review-controls .accept::before, .review-controls .reject::before,
+.review-controls-overlay .accept::before, .review-controls-overlay .reject::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.review-controls .accept:hover::before, .review-controls .reject:hover::before,
+.review-controls-overlay .accept:hover::before, .review-controls-overlay .reject:hover::before {
+  opacity: 1;
+}
+.review-controls .accept, .review-controls-overlay .accept { 
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); 
+  color: white;
+}
+.review-controls .reject, .review-controls-overlay .reject { 
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%); 
+  color: white;
+}
+.review-controls .symbol {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+  position: relative;
+  z-index: 1;
+}
+.review-controls .text {
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  position: relative;
+  z-index: 1;
+}
+.review-controls .accept:hover, .review-controls-overlay .accept:hover { 
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+.review-controls .reject:hover, .review-controls-overlay .reject:hover { 
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Navigation Controls */
+.navigation-controls {
+  display: flex;
+  justify-content: center;
+  margin-top: 1.5rem;
+  gap: 2rem;
+}
+
+.nav-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border: none;
+  border-radius: 2rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  min-width: 100px;
+  min-height: 80px;
+  justify-content: center;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: white;
+}
+
+.nav-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.nav-btn:hover::before {
+  opacity: 1;
+}
+
+.nav-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.nav-btn:disabled {
+  background: #cbd5e1;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  opacity: 0.6;
+}
+
+.nav-symbol {
+  font-size: 1.5rem;
+  margin-bottom: 0.25rem;
+  font-weight: 700;
+  position: relative;
+  z-index: 1;
+}
+
+.nav-text {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  position: relative;
+  z-index: 1;
+}
+
+/* Complete Review Button */
+.complete-review-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border: none;
+  border-radius: 2rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  min-width: 120px;
+  min-height: 80px;
+  justify-content: center;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  color: white;
+}
+
+.complete-review-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.complete-review-btn:hover::before {
+  opacity: 1;
+}
+
+.complete-review-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.complete-symbol {
+  font-size: 1.5rem;
+  margin-bottom: 0.25rem;
+  font-weight: 700;
+  position: relative;
+  z-index: 1;
+}
+
+.complete-text {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  position: relative;
+  z-index: 1;
+}
+
+/* Keyboard Shortcuts */
+.keyboard-shortcuts {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.shortcuts-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text);
+  font-size: 0.875rem;
+}
+
+.shortcuts-icon {
+  font-size: 1rem;
+}
+
+.shortcuts-title {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.shortcuts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+
+.shortcut-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.shortcut-item kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.25rem;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.25rem;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--color-text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Prefetch Status */
+.prefetch-status {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.prefetch-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.prefetch-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-border);
+  border-top: 2px solid var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.prefetch-text {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  flex: 1;
+}
+
+.prefetch-progress {
+  width: 60px;
+  height: 4px;
+  background: var(--color-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.prefetch-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* Clear Review Section */
+.clear-review-section {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+.clear-review-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem 2rem;
+  border: none;
+  border-radius: 2rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  min-width: 200px;
+  min-height: 80px;
+  justify-content: center;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+  color: white;
+}
+
+.clear-review-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.clear-review-btn:hover::before {
+  opacity: 1;
+}
+
+.clear-review-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+  background: linear-gradient(135deg, #4b5563 0%, #374151 100%);
+}
+
+.clear-symbol {
+  font-size: 1.5rem;
+  margin-bottom: 0.25rem;
+  font-weight: 700;
+  position: relative;
+  z-index: 1;
+}
+
+.clear-text {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  position: relative;
+  z-index: 1;
+}
+
+/* Keyboard Help */
+.keyboard-help {
+  text-align: center;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.keyboard-help small {
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.dark-mode .keyboard-help {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.dark-mode .keyboard-help small {
+  color: var(--color-text-secondary);
+  opacity: 0.9;
+}
+
+.prefetch-indicator {
+  display: block;
+  margin-top: 0.5rem;
+  color: var(--color-primary);
+  font-weight: 600;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.status { 
+  margin-top: 1rem; 
+  font-weight: 600; 
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-lg);
+  text-align: center;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.status.ok { 
+  color: #166534; 
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  border: 1px solid #bbf7d0;
+}
+.status.bad { 
+  color: #7f1d1d; 
+  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+  border: 1px solid #fecaca;
+}
+
+/* Pagination */
+.pager { 
+  display: flex; 
+  gap: 0.5rem; 
+  align-items: center; 
+  justify-content: center;
+  padding: 1rem;
+}
+.pager button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  border-radius: 3rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 80px;
+}
+.pager button:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+.pager button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-muted);
+}
+.pager span {
+  padding: 0.5rem 1rem;
+  background: var(--color-primary);
+  color: white;
+  border-radius: 3rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.page-size-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--color-bg-secondary);
+  border-radius: 3rem;
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.page-size-selector label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.page-size-selector select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 2rem;
+  background: var(--color-bg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.page-size-selector select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.page-size-selector select:hover {
+  border-color: var(--color-primary);
+}
+
+.asset-filter-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--color-bg-secondary);
+  border-radius: 3rem;
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.asset-filter-selector label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.asset-filter-selector select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 2rem;
+  background: var(--color-bg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.asset-filter-selector select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.asset-filter-selector select:hover {
+  border-color: var(--color-primary);
+}
+/* Asset ID Pills */
+.id-page { 
+  margin-bottom: 1rem;
+  max-width: 100%;
+  background: var(--color-bg);
+  border-radius: 3rem;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.id-pills-section {
+  display: grid; 
+  grid-template-columns: repeat(10, 1fr);
+  gap: 0.5rem;
+  padding: 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.id-pill { 
+  border: 2px solid var(--color-border); 
+  padding: 0.75rem 0.5rem; 
+  background: var(--color-bg); 
+  border-radius: 3rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  transition: all 0.3s ease;
+  text-align: center;
+  white-space: nowrap;
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.id-pill::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(59, 130, 246, 0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.id-pill:hover::before {
+  opacity: 1;
+}
+.id-pill:hover { 
+  background: var(--color-bg-secondary); 
+  border-color: var(--color-primary);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  color: var(--color-primary);
+}
+
+.id-pill.reviewed-accepted {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  border-color: #16a34a;
+  color: #166534;
+  font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.1);
+}
+
+.id-pill.reviewed-accepted:hover {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  border-color: #15803d;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md), 0 0 0 3px rgba(22, 163, 74, 0.2);
+}
+
+.id-pill.reviewed-rejected {
+  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+  border-color: #dc2626;
+  color: #7f1d1d;
+  font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
+}
+
+.id-pill.reviewed-rejected:hover {
+  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  border-color: #b91c1c;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md), 0 0 0 3px rgba(220, 38, 38, 0.2);
+}
+
+/* Tab Styles */
+.tabs {
+  display: flex;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0 2rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.tab-button {
+  padding: 1rem 2rem;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  position: relative;
+  overflow: hidden;
+}
+
+.tab-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.tab-button:hover::before {
+  opacity: 1;
+}
+
+.tab-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.tab-button.active {
+  color: #fff;
+  border-bottom-color: #fff;
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+/* Export Tab Styles */
+.export-content {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.export-section {
+  background: var(--color-bg);
+  border-radius: 3rem;
+  padding: 3rem;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.export-section h2 {
+  margin: 0 0 1.5rem 0;
+  color: var(--color-text);
+  font-size: 2rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.export-info {
+  color: #64748b;
+  margin-bottom: 2rem;
+  line-height: 1.7;
+  font-size: 1.1rem;
+}
+
+.export-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 3rem;
+}
+
+.stat-card {
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-border-light) 100%);
+  border: 2px solid var(--color-border);
+  border-radius: 3rem;
+  padding: 2rem 1.5rem;
+  text-align: center;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(59, 130, 246, 0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.stat-card:hover::before {
+  opacity: 1;
+}
+
+.stat-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--color-primary);
+}
+
+.stat-card h3 {
+  margin: 0 0 1rem 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.stat-number {
+  font-size: 3rem;
+  font-weight: 800;
+  color: var(--color-primary);
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+}
+
+.stat-number.accepted {
+  color: #16a34a;
+}
+
+.stat-number.rejected {
+  color: #dc2626;
+}
+
+.stat-number.total {
+  color: #6366f1;
+}
+
+.stat-number.target-ids {
+  color: #059669;
+}
+
+.export-actions {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.export-button {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  color: white;
+  border: none;
+  border-radius: 3rem;
+  padding: 1rem 2rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+}
+
+.export-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.export-button:hover::before {
+  opacity: 1;
+}
+
+.export-button:hover:not(:disabled) {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lg);
+}
+
+.export-button:disabled {
+  background: #cbd5e1;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.export-icon {
+  font-size: 1.25rem;
+}
+
+.export-buttons-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+
+.backup-button {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+}
+
+.backup-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+}
+
+.import-button {
+  background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+}
+
+.import-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #6d28d9 0%, #5b21b6 100%);
+}
+
+.export-info {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(37, 99, 235, 0.05) 100%);
+  border: 1px solid var(--color-border);
+  border-radius: 1.5rem;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.export-info p {
+  margin: 0.5rem 0;
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.export-info p:first-child {
+  margin-top: 0;
+}
+
+.export-info p:last-child {
+  margin-bottom: 0;
+}
+
+.no-data {
+  color: #64748b;
+  font-style: italic;
+  margin-top: 1rem;
+  font-size: 1rem;
+}
+
+.preview-section {
+  border-top: 2px solid #e2e8f0;
+  padding-top: 2rem;
+}
+
+.preview-section h3 {
+  margin: 0 0 1.5rem 0;
+  color: var(--color-text);
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.preview-table {
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-border-light) 100%);
+  border-radius: 3rem;
+  overflow: hidden;
+  border: 2px solid var(--color-border);
+  box-shadow: var(--shadow-md);
+  transition: all 0.3s ease;
+}
+
+.preview-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.preview-table th,
+.preview-table td {
+  padding: 1rem 1.5rem;
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.preview-table th {
+  background: linear-gradient(135deg, var(--color-border-light) 0%, var(--color-border) 100%);
+  font-weight: 700;
+  color: var(--color-text);
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.preview-table td {
+  font-size: 0.875rem;
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.preview-table tr:hover {
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.dark-mode .preview-table tr:hover {
+  background: rgba(96, 165, 250, 0.1);
+}
+
+.status-badge {
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-xl);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  display: inline-block;
+}
+
+.status-badge.accepted {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  color: #166534;
+  border: 1px solid #86efac;
+}
+
+.status-badge.rejected {
+  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  color: #7f1d1d;
+  border: 1px solid #fca5a5;
+}
+
+.preview-note {
+  padding: 1rem 1.5rem;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  color: #92400e;
+  font-size: 0.875rem;
+  margin: 0;
+  border-top: 1px solid #fde68a;
+  font-weight: 500;
+}
+
+/* Export Preview Pagination */
+.export-preview-pager {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 1.5rem 0;
+  justify-content: center;
+  padding: 1rem;
+  background: var(--color-bg);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.export-preview-pager button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  border-radius: 3rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 80px;
+}
+
+.export-preview-pager button:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.export-preview-pager button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-muted);
+}
+
+.export-preview-pager span {
+  padding: 0.5rem 1rem;
+  background: var(--color-primary);
+  color: white;
+  border-radius: 3rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.export-preview-filter-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--color-bg-secondary);
+  border-radius: 3rem;
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.export-preview-filter-selector label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.export-preview-filter-selector select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 2rem;
+  background: var(--color-bg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.export-preview-filter-selector select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.export-preview-filter-selector select:hover {
+  border-color: var(--color-primary);
+}
+
+.export-preview-page-size-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--color-bg-secondary);
+  border-radius: 3rem;
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.export-preview-page-size-selector label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.export-preview-page-size-selector select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 2rem;
+  background: var(--color-bg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.export-preview-page-size-selector select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.export-preview-page-size-selector select:hover {
+  border-color: var(--color-primary);
+}
+
+/* Settings Tab Styles */
+.settings-content {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.settings-section {
+  background: var(--color-bg);
+  border-radius: 3rem;
+  padding: 3rem;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.settings-section h2 {
+  margin: 0 0 1.5rem 0;
+  color: var(--color-text);
+  font-size: 2rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.settings-info {
+  color: #64748b;
+  margin-bottom: 2rem;
+  line-height: 1.7;
+  font-size: 1.1rem;
+}
+
+.settings-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 3rem;
+}
+
+.settings-actions {
+  border-top: 2px solid var(--color-border);
+  padding-top: 2rem;
+}
+
+.action-group {
+  margin-bottom: 2rem;
+}
+
+.offline-mode-frame {
+  border: 2px solid var(--color-primary);
+  border-radius: 2rem;
+  padding: 2rem;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(37, 99, 235, 0.05) 100%);
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.1);
+}
+
+.appearance-settings-frame {
+  border: 2px solid var(--color-primary);
+  border-radius: 2rem;
+  padding: 2rem;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(37, 99, 235, 0.05) 100%);
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.1);
+}
+
+.offline-mode-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.nuclear-option-section {
+  border: 3px solid #dc2626;
+  border-radius: 2rem;
+  padding: 2rem;
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.05) 0%, rgba(185, 28, 28, 0.05) 100%);
+  box-shadow: 0 0 20px rgba(220, 38, 38, 0.2);
+  margin-bottom: 2rem;
+}
+
+.ultimate-nuclear-section {
+  border: 3px solid #7c2d12;
+  border-radius: 2rem;
+  padding: 2rem;
+  background: linear-gradient(135deg, rgba(124, 45, 18, 0.05) 0%, rgba(220, 38, 38, 0.05) 100%);
+  box-shadow: 0 0 20px rgba(124, 45, 18, 0.3);
+  margin-bottom: 2rem;
+}
+
+.action-group h3 {
+  margin: 0 0 1rem 0;
+  color: var(--color-text);
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+/* Ensure Offline Mode Settings heading is always visible */
+.offline-mode-frame h3 {
+  color: var(--color-text) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Dark mode specific styling for better contrast */
+.dark-mode .offline-mode-frame h3 {
+  color: #ffffff !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.action-description {
+  color: #64748b;
+  margin-bottom: 1.5rem;
+  line-height: 1.6;
+  font-size: 1rem;
+}
+
+.danger-button {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+  color: white;
+  border: none;
+  border-radius: 3rem;
+  padding: 1rem 2rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+}
+
+.danger-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.danger-button:hover::before {
+  opacity: 1;
+}
+
+.danger-button:hover:not(:disabled) {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lg);
+  background: linear-gradient(135deg, #b91c1c 0%, #991b1b 100%);
+}
+
+.danger-button:disabled {
+  background: #cbd5e1;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.ultimate-danger {
+  background: linear-gradient(135deg, #7c2d12 0%, #dc2626 50%, #b91c1c 100%);
+  animation: pulse-danger 2s infinite;
+}
+
+.ultimate-danger:hover:not(:disabled) {
+  background: linear-gradient(135deg, #dc2626 0%, #7c2d12 50%, #991b1b 100%);
+  animation: pulse-danger-fast 1s infinite;
+}
+
+@keyframes pulse-danger {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+@keyframes pulse-danger-fast {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+ .danger-icon {
+   font-size: 1.25rem;
+ }
+
+ .cache-stats-display {
+   display: grid;
+   grid-template-columns: repeat(2, 1fr);
+   gap: 1rem;
+   margin-top: 1rem;
+   padding: 1rem;
+   background: var(--color-bg-primary);
+   border-radius: 1rem;
+   border: 1px solid var(--color-border);
+   max-height: 300px;
+   overflow-y: auto;
+ }
+
+ .cache-stat {
+   display: flex;
+   justify-content: space-between;
+   align-items: center;
+   padding: 0.5rem;
+ }
+
+ .cache-label {
+   font-weight: 600;
+   color: var(--color-text-secondary);
+   font-size: 0.9rem;
+ }
+
+ .cache-value {
+   font-weight: 700;
+   color: var(--color-primary);
+   font-size: 0.9rem;
+ }
+
+ .secondary-button {
+   background: linear-gradient(135deg, #64748b 0%, #475569 100%);
+   color: white;
+   border: none;
+   border-radius: 2rem;
+   padding: 0.75rem 1.5rem;
+   font-size: 1rem;
+   font-weight: 600;
+   cursor: pointer;
+   transition: all 0.3s ease;
+   display: inline-flex;
+   align-items: center;
+   gap: 0.5rem;
+   box-shadow: var(--shadow-sm);
+ }
+
+ .secondary-button:hover {
+   transform: translateY(-2px);
+   box-shadow: var(--shadow-md);
+   background: linear-gradient(135deg, #475569 0%, #334155 100%);
+ }
+
+ .button-icon {
+   font-size: 1rem;
+ }
+
+ /* Dark Mode Toggle Button */
+ .setting-item {
+   display: flex;
+   align-items: center;
+   justify-content: space-between;
+   padding: 1.5rem;
+   background: var(--color-bg-secondary);
+   border-radius: 2rem;
+   border: 2px solid var(--color-border);
+   margin-bottom: 1rem;
+   transition: all 0.3s ease;
+ }
+
+ .setting-item.has-input-group {
+   flex-direction: column;
+   align-items: stretch;
+ }
+
+ .setting-item:hover {
+   border-color: var(--color-primary);
+   transform: translateY(-2px);
+   box-shadow: var(--shadow-md);
+ }
+
+ .setting-info h4 {
+   margin: 0 0 0.5rem 0;
+   font-size: 1.1rem;
+   font-weight: 700;
+   color: var(--color-text);
+ }
+
+ .setting-info p {
+   margin: 0;
+   color: var(--color-text-secondary);
+   line-height: 1.5;
+ }
+
+ .input-group {
+   display: block;
+   margin-top: 1rem;
+   margin-left: 1rem;
+   margin-right: 3rem;
+ }
+
+ .path-input {
+   width: 100%;
+   padding: 0.75rem 1rem;
+   border: 2px solid var(--color-border);
+   border-radius: 1.5rem;
+   font-size: 1rem;
+   background: var(--color-bg);
+   color: var(--color-text);
+   transition: all 0.3s ease;
+ }
+
+ .path-input:focus {
+   outline: none;
+   border-color: var(--color-primary);
+   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+ }
+
+ .save-button {
+   background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+   color: white;
+   border: none;
+   border-radius: 1.5rem;
+   padding: 0.75rem 1.5rem;
+   font-size: 1rem;
+   font-weight: 600;
+   cursor: pointer;
+   transition: all 0.3s ease;
+   display: inline-flex;
+   align-items: center;
+   gap: 0.5rem;
+   box-shadow: var(--shadow-sm);
+ }
+
+ .save-button:hover {
+   transform: translateY(-2px);
+   box-shadow: var(--shadow-md);
+   background: linear-gradient(135deg, var(--color-primary-2) 0%, var(--color-primary) 100%);
+ }
+
+ .browse-button {
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 2px solid var(--color-success);
+  border-radius: 1.5rem;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  box-shadow: var(--shadow-sm);
+}
+
+ .browse-button:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  background: var(--color-success);
+  color: white;
+}
+
+  .setting-hint {
+   margin-top: 1rem;
+   font-size: 0.9rem;
+   color: var(--color-text-secondary);
+   line-height: 1.5;
+   background: var(--color-bg-secondary);
+   padding: 1rem;
+   border-radius: var(--radius-lg);
+   border: 1px solid var(--color-border-light);
+ }
+
+ .setting-hint p {
+   margin: 0 0 0.75rem 0;
+   font-weight: 600;
+   color: var(--color-text);
+ }
+
+ .setting-hint ul {
+   margin: 0;
+   padding-left: 1.5rem;
+ }
+
+ .setting-hint li {
+   margin-bottom: 0.5rem;
+ }
+
+ .setting-hint code {
+   background: var(--color-bg);
+   padding: 0.2rem 0.4rem;
+   border-radius: var(--radius-sm);
+   font-family: 'Courier New', monospace;
+   font-size: 0.85rem;
+   color: var(--color-primary);
+   border: 1px solid var(--color-border);
+ }
+
+ .toggle-button {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border: 2px solid var(--color-primary);
+  border-radius: 2rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-shadow: var(--shadow-md);
+}
+
+.toggle-button:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+  background: var(--color-primary);
+  color: white;
+}
+
+.toggle-button.active {
+  background: var(--color-success);
+  color: white;
+  border-color: var(--color-success);
+}
+
+/* Special styling for offline mode - black background */
+.offline-mode-frame .toggle-button.active {
+  background: #000000 !important;
+  color: white !important;
+  border-color: #000000 !important;
+}
+
+
+
+ .toggle-icon {
+   font-size: 1.25rem;
+   position: relative;
+   z-index: 1;
+ }
+
+ .toggle-text {
+   position: relative;
+   z-index: 1;
+ }
+
+ /* Analytics Tab Styles */
+ .analytics-content {
+   max-width: 1200px;
+   margin: 0 auto;
+ }
+
+ .analytics-section {
+   background: var(--color-bg);
+   border-radius: 3rem;
+   padding: 3rem;
+   box-shadow: var(--shadow-lg);
+   border: 1px solid var(--color-border);
+   transition: all 0.3s ease;
+   margin-bottom: 2rem;
+ }
+
+ .analytics-section h2 {
+   font-size: 2rem;
+   font-weight: 700;
+   margin: 0 0 1rem 0;
+   color: var(--color-text);
+   text-align: center;
+ }
+
+ .analytics-description {
+   text-align: center;
+   color: var(--color-text-secondary);
+   margin-bottom: 2rem;
+   font-size: 1.1rem;
+ }
+
+ .analytics-stats {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+   gap: 1.5rem;
+   margin-bottom: 2rem;
+ }
+
+ /* About Tab Styles */
+ .about-content {
+   max-width: 1200px;
+   margin: 0 auto;
+ }
+
+ .about-section {
+  background: var(--color-bg);
+  border-radius: 3rem;
+  padding: 3rem;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+ .hero-section {
+  text-align: center;
+  margin-bottom: 4rem;
+  padding: 3rem 0;
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-border-light) 100%);
+  border-radius: 3rem;
+  border: 2px solid var(--color-primary);
+  transition: all 0.3s ease;
+}
+
+ .hero-icon {
+   margin-bottom: 1rem;
+   animation: float 3s ease-in-out infinite;
+   color: var(--color-primary);
+ }
+
+ @keyframes float {
+   0%, 100% { transform: translateY(0px); }
+   50% { transform: translateY(-10px); }
+ }
+
+ .hero-title {
+   font-size: 3rem;
+   font-weight: 800;
+   margin: 0 0 1rem 0;
+   background: linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #06b6d4 100%);
+   -webkit-background-clip: text;
+   -webkit-text-fill-color: transparent;
+   background-clip: text;
+   text-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+ }
+
+ .hero-subtitle {
+   font-size: 1.25rem;
+   color: var(--color-text-secondary);
+   margin: 0;
+   font-weight: 500;
+   font-style: italic;
+ }
+
+ .praise-grid {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+   gap: 2rem;
+   margin-bottom: 4rem;
+ }
+
+ .praise-card {
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-border-light) 100%);
+  border: 2px solid var(--color-border);
+  border-radius: 2rem;
+  padding: 2rem;
+  text-align: center;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+ .praise-card::before {
+   content: '';
+   position: absolute;
+   top: 0;
+   left: 0;
+   right: 0;
+   bottom: 0;
+   background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(59, 130, 246, 0) 100%);
+   opacity: 0;
+   transition: opacity 0.3s ease;
+ }
+
+ .praise-card:hover::before {
+   opacity: 1;
+ }
+
+ .praise-card:hover {
+   transform: translateY(-8px);
+   box-shadow: var(--shadow-lg);
+   border-color: var(--color-primary);
+ }
+
+ .praise-icon {
+   margin-bottom: 1rem;
+   animation: bounce 2s ease-in-out infinite;
+   color: var(--color-primary);
+ }
+
+ @keyframes bounce {
+   0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+   40% { transform: translateY(-10px); }
+   60% { transform: translateY(-5px); }
+ }
+
+ .praise-card h3 {
+   font-size: 1.5rem;
+   font-weight: 700;
+   margin: 0 0 1rem 0;
+   color: var(--color-text);
+   position: relative;
+   z-index: 1;
+ }
+
+ .praise-card p {
+   color: var(--color-text-secondary);
+   line-height: 1.7;
+   margin: 0;
+   font-size: 1rem;
+   position: relative;
+   z-index: 1;
+ }
+
+ .achievement-section {
+  margin-bottom: 4rem;
+  padding: 2rem;
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-border-light) 100%);
+  border-radius: 2rem;
+  border: 2px solid var(--color-primary);
+  transition: all 0.3s ease;
+}
+
+ .achievement-section h2 {
+  text-align: center;
+  font-size: 2rem;
+  font-weight: 700;
+  margin: 0 0 2rem 0;
+  color: var(--color-text);
+}
+
+ .achievement-list {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+   gap: 1rem;
+ }
+
+ .achievement-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 1rem;
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.dark-mode .achievement-item {
+  background: rgba(30, 41, 59, 0.9);
+}
+
+ .achievement-item:hover {
+   transform: translateX(5px);
+   box-shadow: var(--shadow-md);
+   background: rgba(255, 255, 255, 0.95);
+ }
+
+.dark-mode .achievement-item:hover {
+  background: rgba(30, 41, 59, 1);
+}
+
+ .achievement-badge {
+   flex-shrink: 0;
+   color: var(--color-primary);
+ }
+
+ .achievement-item span:last-child {
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+ .quote-section {
+  text-align: center;
+  margin-bottom: 4rem;
+  padding: 3rem;
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-border-light) 100%);
+  border-radius: 2rem;
+  border: 2px solid var(--color-primary);
+  transition: all 0.3s ease;
+}
+
+ .hero-quote {
+  font-size: 1.5rem;
+  font-style: italic;
+  color: var(--color-text);
+  margin: 0 0 1rem 0;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.quote-author {
+  font-size: 1rem;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+ .stats-section {
+   text-align: center;
+ }
+
+ .stats-section h2 {
+   font-size: 2rem;
+   font-weight: 700;
+   margin: 0 0 2rem 0;
+   color: var(--color-text);
+ }
+
+ .impact-stats {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+   gap: 2rem;
+ }
+
+ .impact-stat {
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-border-light) 100%);
+  border: 2px solid var(--color-border);
+  border-radius: 2rem;
+  padding: 2rem;
+  transition: all 0.3s ease;
+}
+
+ .impact-stat:hover {
+   transform: translateY(-5px);
+   box-shadow: var(--shadow-lg);
+   border-color: var(--color-primary);
+ }
+
+ .impact-stat .stat-number {
+   font-size: 3rem;
+   font-weight: 800;
+   color: var(--color-primary);
+   margin-bottom: 0.5rem;
+   line-height: 1;
+   display: flex;
+   align-items: center;
+   justify-content: center;
+   gap: 0.5rem;
+ }
+
+ .impact-stat .stat-label {
+   font-size: 0.875rem;
+   color: var(--color-text-secondary);
+   font-weight: 600;
+   text-transform: uppercase;
+   letter-spacing: 0.05em;
+ }
+
+/* Image Preview Modal Styles */
+.image-preview-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.2s ease-out;
+}
+
+.preview-content {
+  background: var(--color-bg);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  max-width: 90vw;
+  max-height: 90vh;
+  box-shadow: var(--shadow-xl);
+  border: 2px solid var(--color-border);
+  position: relative;
+  animation: scaleIn 0.2s ease-out;
+}
+
+.preview-content img {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border-radius: 0.5rem;
+  display: block;
+}
+
+.preview-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: var(--color-bg-secondary);
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.preview-id {
+  color: var(--color-text);
+}
+
+.preview-score {
+  color: var(--color-primary);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0.9);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Dark mode adjustments for preview modal */
+.dark-mode .preview-content {
+  background: var(--color-bg-dark);
+  border-color: var(--color-border-dark);
+}
+
+.dark-mode .preview-info {
+  background: var(--color-bg-secondary-dark);
+}
+</style>
+
+
