@@ -323,7 +323,7 @@ const showEmptyInfo = computed(() => submitted.value && assetId.value.trim() ===
 const hasAssetBeenFound = computed(() => {
   // An asset is considered "found" if we have either a reference image OR predicted images
   // This handles cases where an asset exists in the database but has no reference image
-  return (referenceFileId.value && referenceFileId.value !== 'null' && referenceFileId.value !== 'undefined') || predicted.value.length > 0
+  return (referenceFileId.value && referenceFileId.value !== null && referenceFileId.value !== 'null' && referenceFileId.value !== 'undefined') || predicted.value.length > 0
 })
 const showNoMatches = computed(() => submitted.value && !loading.value && !error.value && assetId.value.trim() !== '' && !hasAssetBeenFound.value)
 
