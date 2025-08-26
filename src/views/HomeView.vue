@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useAuthStore } from '../stores/auth'
 const auth = useAuthStore()
 
@@ -200,10 +200,12 @@ function handleSearch() {
     // Ensure all predicted images have frames
     ensureAllPredictedHaveFrames()
     
-    // Auto-scroll to reference image with longer delay to ensure DOM is updated
-    setTimeout(() => {
-      scrollToReferenceImage()
-    }, 300)
+    // Auto-scroll to reference image after DOM update
+    nextTick(() => {
+      setTimeout(() => {
+        scrollToReferenceImage()
+      }, 100)
+    })
     
     // Schedule pre-fetching of next assets
     schedulePrefetch()
@@ -256,10 +258,12 @@ function handleSearch() {
       // Ensure all predicted images have frames
       ensureAllPredictedHaveFrames()
       
-      // Auto-scroll to reference image with longer delay to ensure DOM is updated
-      setTimeout(() => {
-        scrollToReferenceImage()
-      }, 300)
+      // Auto-scroll to reference image after DOM update
+      nextTick(() => {
+        setTimeout(() => {
+          scrollToReferenceImage()
+        }, 100)
+      })
       
       // Schedule pre-fetching of next assets
       schedulePrefetch()
@@ -616,32 +620,34 @@ function goToNextAsset() {
 // Function to scroll to reference image
 function scrollToReferenceImage() {
   console.log('scrollToReferenceImage called, referenceImageRef:', referenceImageRef.value)
-  if (referenceImageRef.value) {
-    setTimeout(() => {
+  
+  // Use nextTick to ensure DOM is updated before trying to scroll
+  nextTick(() => {
+    if (referenceImageRef.value) {
       referenceImageRef.value.scrollIntoView({ 
         behavior: 'smooth', 
         block: 'start',
         inline: 'nearest'
       })
       console.log('Scrolled to reference image')
-    }, 200) // Longer delay to ensure DOM is updated
-  } else {
-    console.log('referenceImageRef is null, cannot scroll')
-    // Try again after a longer delay in case DOM is still updating
-    setTimeout(() => {
-      console.log('Retrying scroll, referenceImageRef:', referenceImageRef.value)
-      if (referenceImageRef.value) {
-        referenceImageRef.value.scrollIntoView({ 
-          behavior: 'smooth', 
-          block: 'start',
-          inline: 'nearest'
-        })
-        console.log('Scrolled to reference image on retry')
-      } else {
-        console.log('Still null on retry')
-      }
-    }, 500)
-  }
+    } else {
+      console.log('referenceImageRef is null after nextTick, cannot scroll')
+      // Try again after a longer delay in case DOM is still updating
+      setTimeout(() => {
+        console.log('Retrying scroll, referenceImageRef:', referenceImageRef.value)
+        if (referenceImageRef.value) {
+          referenceImageRef.value.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'start',
+            inline: 'nearest'
+          })
+          console.log('Scrolled to reference image on retry')
+        } else {
+          console.log('Still null on retry')
+        }
+      }, 300)
+    }
+  })
 }
 
 // Function to show image preview on hover
