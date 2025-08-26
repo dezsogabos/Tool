@@ -381,7 +381,7 @@ app.get('/api/health', async (_req, res) => {
   }
 })
 
-// Login verification against Streamlit env variables
+// Login verification - supports multiple credential sources
 app.post('/api/login', (req, res) => {
   try {
     console.log('Login attempt received')
@@ -395,26 +395,47 @@ app.post('/api/login', (req, res) => {
     const { username, password } = req.body
     console.log('Login attempt for username:', username ? 'provided' : 'missing')
     
-    // Debug environment variables
-    console.log('Environment variables check:')
-    console.log('- app_usr:', process.env.app_usr ? 'SET' : 'NOT SET')
-    console.log('- app_auth:', process.env.app_auth ? 'SET' : 'NOT SET')
-    console.log('- NODE_ENV:', process.env.NODE_ENV)
-    console.log('- PORT:', process.env.PORT)
-    
-    const expectedUser = process.env.app_usr || ''
-    const expectedPass = process.env.app_auth || ''
-    
-    console.log('Expected user from env:', expectedUser ? 'set' : 'not set')
-    console.log('Expected pass from env:', expectedPass ? 'set' : 'not set')
-    
     // Handle missing credentials gracefully
     if (!username || !password) {
       console.log('Missing username or password')
       return res.json({ ok: false, error: 'Username and password required' })
     }
     
-    const isEnvMatch = expectedUser && expectedPass && String(username) === String(expectedUser) && String(password) === String(expectedPass)
+    // Try multiple environment variable sources for credentials
+    const possibleUsers = [
+      process.env.app_usr,
+      process.env.APP_USR,
+      process.env.USERNAME,
+      process.env.USER
+    ].filter(Boolean)
+    
+    const possiblePasswords = [
+      process.env.app_auth,
+      process.env.APP_AUTH,
+      process.env.PASSWORD,
+      process.env.PASS
+    ].filter(Boolean)
+    
+    // Debug environment variables
+    console.log('Environment variables check:')
+    console.log('- Possible users found:', possibleUsers.length)
+    console.log('- Possible passwords found:', possiblePasswords.length)
+    console.log('- NODE_ENV:', process.env.NODE_ENV)
+    
+    // Check if any environment credentials match
+    let isEnvMatch = false
+    for (const expectedUser of possibleUsers) {
+      for (const expectedPass of possiblePasswords) {
+        if (String(username) === String(expectedUser) && String(password) === String(expectedPass)) {
+          isEnvMatch = true
+          console.log('Environment credentials matched')
+          break
+        }
+      }
+      if (isEnvMatch) break
+    }
+    
+    // Always allow admin/admin as fallback
     const isAdminDefault = String(username) === 'admin' && String(password) === 'admin'
     
     console.log('Env match:', isEnvMatch, 'Admin default:', isAdminDefault)
