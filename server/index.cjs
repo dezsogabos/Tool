@@ -994,8 +994,51 @@ app.get('/api/test', (_req, res) => {
   res.json({ 
     ok: true, 
     message: 'Server is working',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    edgeConfigEnv: process.env.EDGE_CONFIG ? 'SET' : 'NOT SET'
   })
+})
+
+// Test Edge Config functionality
+app.get('/api/test-edge-config', async (_req, res) => {
+  try {
+    const client = getEdgeConfig()
+    const testKey = 'test_key'
+    const testData = { message: 'Hello from Edge Config', timestamp: new Date().toISOString() }
+    
+    if (client) {
+      // Test Edge Config
+      await client.set(testKey, testData)
+      const retrieved = await client.get(testKey)
+      await client.delete(testKey)
+      
+      res.json({
+        ok: true,
+        edgeConfigAvailable: true,
+        testPassed: JSON.stringify(retrieved) === JSON.stringify(testData),
+        message: 'Edge Config test completed'
+      })
+    } else {
+      // Test fallback storage
+      fallbackStorage.set(testKey, testData)
+      const retrieved = fallbackStorage.get(testKey)
+      fallbackStorage.delete(testKey)
+      
+      res.json({
+        ok: true,
+        edgeConfigAvailable: false,
+        fallbackTestPassed: JSON.stringify(retrieved) === JSON.stringify(testData),
+        fallbackStorageSize: fallbackStorage.size,
+        message: 'Fallback storage test completed'
+      })
+    }
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+      message: 'Edge Config test failed'
+    })
+  }
 })
 
 // Debug endpoint to list available assets in database
