@@ -163,18 +163,23 @@ function loadDataset() {
   dataset = records
 }
 
+// Global cache for production (Vercel serverless)
+let globalAssetCache = new Map()
+
 // SQLite database setup
 let dbInstance = null
 function getDb() {
   if (!dbInstance) {
-    // Use file-based database for both local and production
-    // This ensures data persists across serverless function invocations
-    const DB_PATH = process.env.NODE_ENV === 'production' 
-      ? '/tmp/data.db'  // Use /tmp for Vercel serverless
-      : path.resolve(__dirname, 'data.db')
-    
-    console.log(`Using file-based database: ${DB_PATH}`)
-    dbInstance = new Database(DB_PATH)
+    // In production (Vercel), use in-memory database with global cache
+    // In local development, use file-based database
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Using in-memory database for production (Vercel serverless)')
+      dbInstance = new Database(':memory:')
+    } else {
+      const DB_PATH = path.resolve(__dirname, 'data.db')
+      console.log(`Using file-based database: ${DB_PATH}`)
+      dbInstance = new Database(DB_PATH)
+    }
   }
   return dbInstance
 }
@@ -431,9 +436,29 @@ app.get('/api/assets/:assetId', async (req, res) => {
     const searchId = String(req.params.assetId).trim()
     if (!searchId) return res.status(400).json({ error: 'assetId required' })
 
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    const row = db.prepare('SELECT asset_id, predicted_asset_ids, matching_scores FROM assets WHERE asset_id = ? LIMIT 1').get(searchId)
+    let row = null
+    
+    // In production, check global cache first
+    if (process.env.NODE_ENV === 'production') {
+      row = globalAssetCache.get(searchId)
+      if (row) {
+        console.log(`🔍 Asset ${searchId} found in global cache`)
+      }
+    }
+    
+    // If not in cache, check database
+    if (!row) {
+      initializeDatabaseIfNeeded()
+      const db = getDb()
+      row = db.prepare('SELECT asset_id, predicted_asset_ids, matching_scores FROM assets WHERE asset_id = ? LIMIT 1').get(searchId)
+      
+      // In production, cache the result
+      if (process.env.NODE_ENV === 'production' && row) {
+        globalAssetCache.set(searchId, row)
+        console.log(`🔍 Asset ${searchId} cached in global cache`)
+      }
+    }
+    
     if (!row) {
       console.log(`🔍 Asset ${searchId} not found in database`)
       return res.json({ 
@@ -610,18 +635,46 @@ app.get('/api/local-images/:filename', (req, res) => {
 app.get('/api/assets-page', (req, res) => {
   try {
     console.log('API call: /api/assets-page')
-    initializeDatabaseIfNeeded()
-    const db = getDb()
-    console.log('Database initialized')
+    
+    let total = 0
+    let rows = []
+    
+    // In production, use global cache
+    if (process.env.NODE_ENV === 'production') {
+      total = globalAssetCache.size
+      const allIds = Array.from(globalAssetCache.keys()).sort((a, b) => {
+        const aNum = parseInt(a) || 0
+        const bNum = parseInt(b) || 0
+        return aNum - bNum
+      })
+      
+      const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize) || 20))
+      const page = Math.max(1, Number(req.query.page) || 1)
+      const offset = (page - 1) * pageSize
+      
+      const pageIds = allIds.slice(offset, offset + pageSize)
+      rows = pageIds.map(id => ({ asset_id: id }))
+      
+      console.log('Using global cache - Total assets:', total, 'Page:', page, 'Retrieved:', rows.length)
+    } else {
+      // Local development - use database
+      initializeDatabaseIfNeeded()
+      const db = getDb()
+      console.log('Database initialized')
+      const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize) || 20))
+      const page = Math.max(1, Number(req.query.page) || 1)
+      const offset = (page - 1) * pageSize
+      console.log('Querying database for page', page, 'size', pageSize)
+      const totalRow = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
+      total = totalRow?.cnt || 0
+      console.log('Total assets in DB:', total)
+      rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT ? OFFSET ?').all(pageSize, offset)
+      console.log('Retrieved', rows.length, 'rows')
+    }
+    
     const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize) || 20))
     const page = Math.max(1, Number(req.query.page) || 1)
-    const offset = (page - 1) * pageSize
-    console.log('Querying database for page', page, 'size', pageSize)
-    const totalRow = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
-    const total = totalRow?.cnt || 0
-    console.log('Total assets in DB:', total)
-    const rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT ? OFFSET ?').all(pageSize, offset)
-    console.log('Retrieved', rows.length, 'rows')
+    
     res.json({
       page,
       pageSize,
@@ -806,8 +859,18 @@ app.post('/api/import-csv', async (req, res) => {
             }
           }
           
-          insert.run(assetId, predictedAssetIds, matchingScores)
-          imported++
+                     insert.run(assetId, predictedAssetIds, matchingScores)
+           
+           // In production, also cache the imported data
+           if (process.env.NODE_ENV === 'production') {
+             globalAssetCache.set(assetId, {
+               asset_id: assetId,
+               predicted_asset_ids: predictedAssetIds,
+               matching_scores: matchingScores
+             })
+           }
+           
+           imported++
           
         } catch (error) {
           errors++
