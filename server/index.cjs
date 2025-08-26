@@ -854,14 +854,12 @@ app.post('/api/import-csv', async (req, res) => {
   }
 })
 
-// Initialize database lazily (only when needed)
-let dbInitialized = false
+// Initialize database (always ensure tables exist)
 function initializeDatabaseIfNeeded() {
-  if (!dbInitialized) {
-    console.log('Initializing database...')
-    loadCsvIntoDbIfEmpty()
-    dbInitialized = true
-  }
+  console.log('Ensuring database is initialized...')
+  ensureTables()
+  // Note: loadCsvIntoDbIfEmpty() is only called if database is empty
+  // In production, this should be skipped since users import their own CSV
 }
 
 // Simple test endpoint
@@ -879,13 +877,17 @@ app.get('/api/debug/assets', (req, res) => {
     initializeDatabaseIfNeeded()
     const db = getDb()
     
+    // Get total count first
+    const countRow = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
+    const totalCount = countRow?.cnt || 0
+    
     const rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT 20').all()
     const assetIds = rows.map(r => r.asset_id)
     
     res.json({
-      totalAssets: assetIds.length,
+      totalAssets: totalCount,
       sampleAssets: assetIds,
-      message: 'First 20 assets in database'
+      message: `Database has ${totalCount} total assets, showing first 20`
     })
   } catch (error) {
     console.error('Debug assets error:', error)
