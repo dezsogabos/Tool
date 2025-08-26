@@ -11,6 +11,7 @@
     "vercel-build": "vite build"
   },
   "dependencies": {
+    "@libsql/client": "^0.15.14",
     "@vercel/blob": "^1.1.1",
     "@vercel/edge-config": "^1.4.0",
     "better-sqlite3": "^9.6.0",
@@ -20,7 +21,6 @@
     "express-fileupload": "^1.5.2",
     "googleapis": "^131.0.0",
     "pinia": "^2.3.1",
-    "redis": "^5.8.2",
     "vue": "^3.5.18",
     "vue-router": "^4.5.1"
   },

@@ -6,7 +6,7 @@ const dotenv = require('dotenv')
 const { parse } = require('csv-parse/sync')
 const fileUpload = require('express-fileupload')
 const { createClient } = require('@vercel/edge-config')
-const redis = require('redis')
+const { createClient: createTursoClient } = require('@libsql/client')
 
 // Load env (if present)
 dotenv.config()
@@ -164,7 +164,7 @@ function loadDataset() {
   dataset = records
 }
 
-// Redis client for persistent data storage
+// Turso SQLite client for persistent data storage
 // This ensures data persists between serverless function invocations and sessions
 
 // Edge Config client setup (for configuration only, not data storage)
@@ -182,156 +182,234 @@ function getEdgeConfig() {
   return edgeConfigClient
 }
 
-// Redis client setup
-let redisClient = null
-async function getRedisClient() {
-  if (!redisClient) {
+// Turso client setup
+let tursoClient = null
+async function getTursoClient() {
+  if (!tursoClient) {
     try {
-      const url = process.env.REDIS_URL || 'redis://localhost:6379'
-      redisClient = redis.createClient({
+      const url = process.env.TURSO_DATABASE_URL
+      const authToken = process.env.TURSO_AUTH_TOKEN
+      
+      if (!url) {
+        console.error('❌ TURSO_DATABASE_URL environment variable is required')
+        return null
+      }
+      
+      tursoClient = createTursoClient({
         url: url,
-        socket: {
-          connectTimeout: 10000,
-          lazyConnect: true
-        }
+        authToken: authToken
       })
       
-      redisClient.on('error', (err) => {
-        console.error('Redis Client Error:', err)
-      })
+      // Test the connection
+      await tursoClient.execute('SELECT 1')
+      console.log('✅ Turso client connected')
       
-      redisClient.on('connect', () => {
-        console.log('✅ Redis client connected')
-      })
+      // Initialize the database schema
+      await initializeTursoSchema()
       
-      await redisClient.connect()
-      console.log('✅ Redis client initialized')
     } catch (error) {
-      console.error('❌ Failed to initialize Redis client:', error.message)
-      redisClient = null
+      console.error('❌ Failed to initialize Turso client:', error.message)
+      tursoClient = null
     }
   }
-  return redisClient
+  return tursoClient
 }
 
-// Asset storage functions using Redis
+// Initialize Turso database schema
+async function initializeTursoSchema() {
+  try {
+    const client = await getTursoClient()
+    if (!client) return
+    
+    // Create assets table if it doesn't exist
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS assets (
+        asset_id TEXT PRIMARY KEY,
+        predicted_asset_ids TEXT,
+        matching_scores TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+    
+    // Create import_jobs table for chunked imports
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS import_jobs (
+        job_id TEXT PRIMARY KEY,
+        status TEXT,
+        total_records INTEGER,
+        processed INTEGER DEFAULT 0,
+        imported INTEGER DEFAULT 0,
+        skipped INTEGER DEFAULT 0,
+        errors INTEGER DEFAULT 0,
+        error_details TEXT,
+        progress INTEGER DEFAULT 0,
+        options TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+    
+    // Create import_chunks table for storing chunk data
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS import_chunks (
+        job_id TEXT,
+        chunk_index INTEGER,
+        chunk_data TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (job_id, chunk_index)
+      )
+    `)
+    
+    console.log('✅ Turso database schema initialized')
+  } catch (error) {
+    console.error('❌ Failed to initialize Turso schema:', error.message)
+  }
+}
+
+// Asset storage functions using Turso SQLite
 async function getAsset(assetId) {
   try {
-    console.log(`🔍 Getting asset ${assetId} from Redis`)
+    console.log(`🔍 Getting asset ${assetId} from Turso`)
     
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
-      console.log(`🔍 Redis client not available`)
+      console.log(`🔍 Turso client not available`)
       return null
     }
     
-    const data = await client.get(`asset:${assetId}`)
+    const result = await client.execute({
+      sql: 'SELECT asset_id, predicted_asset_ids, matching_scores FROM assets WHERE asset_id = ?',
+      args: [assetId]
+    })
     
-    if (data) {
-      const parsedData = JSON.parse(data)
-      console.log(`🔍 Asset ${assetId} retrieved from Redis`)
-      return parsedData
+    if (result.rows.length > 0) {
+      const row = result.rows[0]
+      const assetData = {
+        asset_id: row.asset_id,
+        predicted_asset_ids: row.predicted_asset_ids,
+        matching_scores: row.matching_scores
+      }
+      console.log(`🔍 Asset ${assetId} retrieved from Turso`)
+      return assetData
     } else {
-      console.log(`🔍 Asset ${assetId} not found in Redis`)
+      console.log(`🔍 Asset ${assetId} not found in Turso`)
       return null
     }
   } catch (error) {
-    console.warn(`Failed to get asset ${assetId} from Redis:`, error.message)
+    console.warn(`Failed to get asset ${assetId} from Turso:`, error.message)
     return null
   }
 }
 
 async function setAsset(assetId, data) {
   try {
-    console.log(`🔍 setAsset called for ${assetId} - saving to Redis`)
+    console.log(`🔍 setAsset called for ${assetId} - saving to Turso`)
     
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
-      throw new Error('Redis client not available')
+      throw new Error('Turso client not available')
     }
     
-    // Save the asset data as JSON string
-    await client.set(`asset:${assetId}`, JSON.stringify(data))
+    // Insert or update the asset data
+    await client.execute({
+      sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, updated_at) 
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+      args: [assetId, data.predicted_asset_ids, data.matching_scores]
+    })
     
-    console.log(`✅ Asset ${assetId} saved to Redis`)
+    console.log(`✅ Asset ${assetId} saved to Turso`)
   } catch (error) {
-    console.error(`❌ Failed to save asset ${assetId} to Redis:`, error.message)
+    console.error(`❌ Failed to save asset ${assetId} to Turso:`, error.message)
     throw error
   }
 }
 
-// Batch operations for improved performance using Redis
+// Batch operations for improved performance using Turso SQLite
 async function setAssetsBatch(assetsData) {
   try {
-    console.log(`🔍 Batch saving ${Object.keys(assetsData).length} assets to Redis`)
+    console.log(`🔍 Batch saving ${Object.keys(assetsData).length} assets to Turso`)
     
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
-      throw new Error('Redis client not available')
+      throw new Error('Turso client not available')
     }
-    
-    // Use Redis pipeline for batch operations
-    const pipeline = client.multi()
     
     let successful = 0
     let failed = 0
     const errors = []
     
-    for (const [assetId, data] of Object.entries(assetsData)) {
-      try {
-        pipeline.set(`asset:${assetId}`, JSON.stringify(data))
-        successful++
-      } catch (error) {
-        console.error(`❌ Failed to add asset ${assetId} to batch:`, error.message)
-        failed++
-        errors.push({ assetId, error: error.message })
+    // Use a transaction for batch operations
+    await client.execute('BEGIN TRANSACTION')
+    
+    try {
+      for (const [assetId, data] of Object.entries(assetsData)) {
+        try {
+          await client.execute({
+            sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, updated_at) 
+                  VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+            args: [assetId, data.predicted_asset_ids, data.matching_scores]
+          })
+          successful++
+        } catch (error) {
+          console.error(`❌ Failed to add asset ${assetId} to batch:`, error.message)
+          failed++
+          errors.push({ assetId, error: error.message })
+        }
       }
+      
+      await client.execute('COMMIT')
+      console.log(`✅ Batch save completed: ${successful} successful, ${failed} failed`)
+      return { successful, failed, errors }
+    } catch (error) {
+      await client.execute('ROLLBACK')
+      throw error
     }
-    
-    // Execute all operations in pipeline
-    await pipeline.exec()
-    
-    console.log(`✅ Batch save completed: ${successful} successful, ${failed} failed`)
-    return { successful, failed, errors }
   } catch (error) {
     console.error('❌ Batch save failed:', error.message)
     throw error
   }
 }
 
-// Batch deletion for improved performance using Redis
+// Batch deletion for improved performance using Turso SQLite
 async function deleteAssetsBatch(assetIds) {
   try {
-    console.log(`🔍 Batch deleting ${assetIds.length} assets from Redis`)
+    console.log(`🔍 Batch deleting ${assetIds.length} assets from Turso`)
     
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
-      throw new Error('Redis client not available')
+      throw new Error('Turso client not available')
     }
-    
-    // Use Redis pipeline for batch operations
-    const pipeline = client.multi()
     
     let successful = 0
     let failed = 0
     const errors = []
     
-    for (const assetId of assetIds) {
-      try {
-        pipeline.del(`asset:${assetId}`)
-        successful++
-      } catch (error) {
-        console.error(`❌ Failed to delete asset ${assetId} from batch:`, error.message)
-        failed++
-        errors.push({ assetId, error: error.message })
+    // Use a transaction for batch operations
+    await client.execute('BEGIN TRANSACTION')
+    
+    try {
+      for (const assetId of assetIds) {
+        try {
+          await client.execute({
+            sql: 'DELETE FROM assets WHERE asset_id = ?',
+            args: [assetId]
+          })
+          successful++
+        } catch (error) {
+          console.error(`❌ Failed to delete asset ${assetId} from batch:`, error.message)
+          failed++
+          errors.push({ assetId, error: error.message })
+        }
       }
+      
+      await client.execute('COMMIT')
+      console.log(`✅ Batch deletion completed: ${successful} successful, ${failed} failed`)
+      return { successful, failed, errors }
+    } catch (error) {
+      await client.execute('ROLLBACK')
+      throw error
     }
-    
-    // Execute all operations in pipeline
-    await pipeline.exec()
-    
-    console.log(`✅ Batch deletion completed: ${successful} successful, ${failed} failed`)
-    return { successful, failed, errors }
   } catch (error) {
     console.error('❌ Batch deletion failed:', error.message)
     throw error
@@ -340,96 +418,63 @@ async function deleteAssetsBatch(assetIds) {
 
 async function getAllAssets() {
   try {
-    console.log('🔍 getAllAssets called - reading from Redis')
+    console.log('🔍 getAllAssets called - reading from Turso')
     
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
-      console.log('🔍 Redis client not available')
+      console.log('🔍 Turso client not available')
       return {}
     }
     
-    // Get all keys with asset: prefix
-    const keys = await client.keys('asset:*')
-    console.log(`🔍 Found ${keys.length} asset keys in Redis`)
+    const result = await client.execute({
+      sql: 'SELECT asset_id, predicted_asset_ids, matching_scores FROM assets ORDER BY asset_id'
+    })
     
-    if (keys.length === 0) {
-      return {}
-    }
-    
-    // Get all assets in batch
-    const pipeline = client.multi()
-    for (const key of keys) {
-      pipeline.get(key)
-    }
-    
-    const results = await pipeline.exec()
     const assets = {}
-    
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i]
-      const assetId = key.replace('asset:', '')
-      const data = results[i]
-      
-      if (data) {
-        try {
-          assets[assetId] = JSON.parse(data)
-        } catch (parseError) {
-          console.warn(`Failed to parse asset ${assetId}:`, parseError.message)
-        }
+    for (const row of result.rows) {
+      assets[row.asset_id] = {
+        asset_id: row.asset_id,
+        predicted_asset_ids: row.predicted_asset_ids,
+        matching_scores: row.matching_scores
       }
     }
     
-    console.log(`🔍 Redis returned ${Object.keys(assets).length} assets`)
+    console.log(`🔍 Turso returned ${Object.keys(assets).length} assets`)
     return assets
   } catch (error) {
-    console.error('❌ Failed to get all assets from Redis:', error.message)
+    console.error('❌ Failed to get all assets from Turso:', error.message)
     return {}
   }
 }
 
 async function deleteAllAssets() {
   try {
-    console.log('🔍 deleteAllAssets called - clearing Redis')
+    console.log('🔍 deleteAllAssets called - clearing Turso')
     
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
-      throw new Error('Redis client not available')
+      throw new Error('Turso client not available')
     }
     
-    // Get all keys with asset: prefix
-    const keys = await client.keys('asset:*')
-    console.log(`🔍 Found ${keys.length} assets to delete from Redis`)
-    
-    if (keys.length === 0) {
-      console.log('✅ No assets to delete')
-      return
-    }
-    
-    // Delete all assets in batch
-    const pipeline = client.multi()
-    for (const key of keys) {
-      pipeline.del(key)
-    }
-    
-    await pipeline.exec()
-    console.log(`✅ Cleared all ${keys.length} assets from Redis`)
+    const result = await client.execute('DELETE FROM assets')
+    console.log(`✅ Cleared all assets from Turso (${result.rowsAffected} rows affected)`)
   } catch (error) {
-    console.error('❌ Failed to clear Redis:', error.message)
+    console.error('❌ Failed to clear Turso:', error.message)
     throw error
   }
 }
 
 async function getAssetCount() {
   try {
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
       return 0
     }
     
-    const keys = await client.keys('asset:*')
-    return keys.length
+    const result = await client.execute('SELECT COUNT(*) as count FROM assets')
+    return result.rows[0].count
   } catch (error) {
-    console.warn('Failed to get asset count from Redis:', error.message)
+    console.warn('Failed to get asset count from Turso:', error.message)
     return 0
   }
 }
@@ -441,12 +486,12 @@ async function initializeDatabase() {
     return
   }
   
-     // Check if we already have assets in Redis
-   const count = await getAssetCount()
-   if (count > 0) {
-     console.log(`Redis already has ${count} assets`)
-     return
-   }
+  // Check if we already have assets in Turso
+  const count = await getAssetCount()
+  if (count > 0) {
+    console.log(`Turso already has ${count} assets`)
+    return
+  }
   
   // Load CSV and import (local development)
   if (!CSV_PATH || !fs.existsSync(CSV_PATH)) {
@@ -459,28 +504,28 @@ async function initializeDatabase() {
   const records = parse(content, { columns: true, skip_empty_lines: true })
   console.log('Parsed', records.length, 'records from CSV')
   
-     let imported = 0
-   const assetsToImport = {}
-   
-   for (const record of records) {
-     const assetId = String(record.asset_id ?? '').trim()
-     if (assetId) {
-       assetsToImport[assetId] = {
-         asset_id: assetId,
-         predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
-         matching_scores: String(record.matching_scores ?? '')
-       }
-     }
-   }
-   
-   if (Object.keys(assetsToImport).length > 0) {
-     console.log(`Importing ${Object.keys(assetsToImport).length} assets in batch...`)
-     const batchResult = await setAssetsBatch(assetsToImport)
-     imported = batchResult.successful
-     console.log(`Batch import result: ${batchResult.successful} successful, ${batchResult.failed} failed`)
-   }
+  let imported = 0
+  const assetsToImport = {}
   
-     console.log(`✅ Imported ${imported} records from CSV to Redis`)
+  for (const record of records) {
+    const assetId = String(record.asset_id ?? '').trim()
+    if (assetId) {
+      assetsToImport[assetId] = {
+        asset_id: assetId,
+        predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
+        matching_scores: String(record.matching_scores ?? '')
+      }
+    }
+  }
+  
+  if (Object.keys(assetsToImport).length > 0) {
+    console.log(`Importing ${Object.keys(assetsToImport).length} assets in batch...`)
+    const batchResult = await setAssetsBatch(assetsToImport)
+    imported = batchResult.successful
+    console.log(`Batch import result: ${batchResult.successful} successful, ${batchResult.failed} failed`)
+  }
+  
+  console.log(`✅ Imported ${imported} records from CSV to Turso`)
 }
 
 // Initialize database on startup
@@ -711,17 +756,17 @@ app.get('/api/assets/:assetId', async (req, res) => {
     const searchId = String(req.params.assetId).trim()
     if (!searchId) return res.status(400).json({ error: 'assetId required' })
 
-         // Get asset from Redis
-     const assetData = await getAsset(searchId)
-     
-     if (!assetData) {
-       console.log(`🔍 Asset ${searchId} not found in Redis`)
-      return res.json({ 
-        assetId: searchId, 
-        reference: { fileId: null },
-        predicted: []
-      })
-    }
+                 // Get asset from Turso
+      const assetData = await getAsset(searchId)
+      
+      if (!assetData) {
+        console.log(`🔍 Asset ${searchId} not found in Turso`)
+       return res.json({ 
+         assetId: searchId, 
+         reference: { fileId: null },
+         predicted: []
+       })
+     }
     
     const predictedIds = parseArrayField(assetData.predicted_asset_ids).map(String)
     const predictedScores = parseArrayField(assetData.matching_scores).map(s => Number(s))
@@ -896,18 +941,18 @@ app.get('/api/assets-page', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1)
     const offset = (page - 1) * pageSize
     
-              console.log('Querying Redis for page', page, 'size', pageSize)
-     
-     // Get all assets from Redis
-     const allAssets = await getAllAssets()
-     const assetIds = Object.keys(allAssets).sort((a, b) => {
-       const aNum = parseInt(a) || 0
-       const bNum = parseInt(b) || 0
-       return aNum - bNum
-     })
-     
-     const total = assetIds.length
-     console.log('Total assets in Redis:', total)
+                             console.log('Querying Turso for page', page, 'size', pageSize)
+      
+      // Get all assets from Turso
+      const allAssets = await getAllAssets()
+      const assetIds = Object.keys(allAssets).sort((a, b) => {
+        const aNum = parseInt(a) || 0
+        const bNum = parseInt(b) || 0
+        return aNum - bNum
+      })
+      
+      const total = assetIds.length
+      console.log('Total assets in Turso:', total)
     
     const pageIds = assetIds.slice(offset, offset + pageSize)
     console.log('Retrieved', pageIds.length, 'asset IDs for page')
@@ -935,34 +980,34 @@ app.post('/api/assets-page-filtered', async (req, res) => {
     const filter = req.body.filter || 'all'
     const reviewedAssets = req.body.reviewedAssets || {}
     
-              console.log('Querying Redis for page', page, 'size', pageSize, 'filter:', filter)
-     
-     // Get all asset IDs from Redis
-     const allAssets = await getAllAssets()
-     const allIds = Object.keys(allAssets).sort((a, b) => {
-       const aNum = parseInt(a) || 0
-       const bNum = parseInt(b) || 0
-       return aNum - bNum
-     })
-     
-     // Filter based on review status
-     let filteredIds = allIds
-     if (filter === 'accepted') {
-       filteredIds = allIds.filter(id => reviewedAssets[id]?.status === 'accepted')
-     } else if (filter === 'rejected') {
-       filteredIds = allIds.filter(id => reviewedAssets[id]?.status === 'rejected')
-     } else if (filter === 'not-reviewed') {
-       filteredIds = allIds.filter(id => !reviewedAssets[id])
-     }
-     // 'all' filter returns all IDs
-     
-     const total = filteredIds.length
-     const overallTotal = allIds.length
-     const pageCount = total ? Math.ceil(total / pageSize) : 0
-     const offset = (page - 1) * pageSize
-     const pageIds = filteredIds.slice(offset, offset + pageSize)
-     
-     console.log('Total assets in Redis:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
+                             console.log('Querying Turso for page', page, 'size', pageSize, 'filter:', filter)
+      
+      // Get all asset IDs from Turso
+      const allAssets = await getAllAssets()
+      const allIds = Object.keys(allAssets).sort((a, b) => {
+        const aNum = parseInt(a) || 0
+        const bNum = parseInt(b) || 0
+        return aNum - bNum
+      })
+      
+      // Filter based on review status
+      let filteredIds = allIds
+      if (filter === 'accepted') {
+        filteredIds = allIds.filter(id => reviewedAssets[id]?.status === 'accepted')
+      } else if (filter === 'rejected') {
+        filteredIds = allIds.filter(id => reviewedAssets[id]?.status === 'rejected')
+      } else if (filter === 'not-reviewed') {
+        filteredIds = allIds.filter(id => !reviewedAssets[id])
+      }
+      // 'all' filter returns all IDs
+      
+      const total = filteredIds.length
+      const overallTotal = allIds.length
+      const pageCount = total ? Math.ceil(total / pageSize) : 0
+      const offset = (page - 1) * pageSize
+      const pageIds = filteredIds.slice(offset, offset + pageSize)
+      
+      console.log('Total assets in Turso:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
     
     res.json({
       page,
@@ -984,11 +1029,11 @@ app.get('/api/db-status', async (req, res) => {
     const totalRecords = await getAssetCount()
     const lastUpdated = new Date().toISOString()
     
-         res.json({
-       totalRecords,
-       lastUpdated,
-       databaseType: 'redis'
-     })
+                   res.json({
+        totalRecords,
+        lastUpdated,
+        databaseType: 'turso'
+      })
   } catch (e) {
     console.error('Error getting database status:', e)
     res.status(500).json({ error: e.message })
@@ -1044,16 +1089,24 @@ app.post('/api/import-csv', async (req, res) => {
         options: options
       }
       
-      // Store the job and records in Redis
-      const client = await getRedisClient()
+      // Store the job and records in Turso
+      const client = await getTursoClient()
       if (client) {
-        await client.set(`import_job:${importJobId}`, JSON.stringify(importJob))
+        // Store the import job
+        await client.execute({
+          sql: `INSERT INTO import_jobs (job_id, status, total_records, processed, imported, skipped, errors, error_details, progress, options, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          args: [importJobId, 'pending', records.length, 0, 0, 0, 0, '[]', 0, JSON.stringify(options)]
+        })
         
         // Store records in chunks to avoid memory issues
         const totalChunks = Math.ceil(records.length / chunkSize)
         for (let i = 0; i < totalChunks; i++) {
           const chunk = records.slice(i * chunkSize, (i + 1) * chunkSize)
-          await client.set(`import_data:${importJobId}:chunk_${i}`, JSON.stringify(chunk))
+          await client.execute({
+            sql: 'INSERT INTO import_chunks (job_id, chunk_index, chunk_data) VALUES (?, ?, ?)',
+            args: [importJobId, i, JSON.stringify(chunk)]
+          })
         }
         
         // Start background processing
@@ -1068,7 +1121,7 @@ app.post('/api/import-csv', async (req, res) => {
           status: 'processing'
         })
       } else {
-        throw new Error('Redis client not available for chunked processing')
+        throw new Error('Turso client not available for chunked processing')
       }
     } else {
       // For smaller files, process immediately
@@ -1184,9 +1237,9 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
   try {
     console.log(`🔄 Starting background processing for job ${jobId}`)
     
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
-      throw new Error('Redis client not available')
+      throw new Error('Turso client not available')
     }
     
     // Clear existing data if requested
@@ -1203,14 +1256,18 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
     // Process each chunk
     for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
       try {
-        // Get chunk data from Redis
-        const chunkData = await client.get(`import_data:${jobId}:chunk_${chunkIndex}`)
-        if (!chunkData) {
+        // Get chunk data from Turso
+        const result = await client.execute({
+          sql: 'SELECT chunk_data FROM import_chunks WHERE job_id = ? AND chunk_index = ?',
+          args: [jobId, chunkIndex]
+        })
+        
+        if (result.rows.length === 0) {
           console.error(`Chunk ${chunkIndex} not found for job ${jobId}`)
           continue
         }
         
-        const records = JSON.parse(chunkData)
+        const records = JSON.parse(result.rows[0].chunk_data)
         console.log(`Processing chunk ${chunkIndex + 1}/${totalChunks} with ${records.length} records`)
         
         // Process records in smaller batches within the chunk
@@ -1264,7 +1321,7 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
             }
           }
           
-          // Save batch to Redis
+          // Save batch to Turso
           if (Object.keys(batchAssets).length > 0) {
             try {
               const batchResult = await setAssetsBatch(batchAssets)
@@ -1288,23 +1345,38 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
         
         // Update job progress
         const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100)
-        const jobUpdate = {
-          status: chunkIndex === totalChunks - 1 ? 'completed' : 'processing',
-          totalRecords: totalRecords,
-          processed: Math.min((chunkIndex + 1) * chunkSize, totalRecords), // Don't exceed total records
-          imported: totalImported,
-          skipped: totalSkipped,
-          errors: totalErrors,
-          errorDetails: allErrorDetails,
-          progress: progress,
-          updatedAt: new Date().toISOString()
-        }
+        const processed = Math.min((chunkIndex + 1) * chunkSize, totalRecords)
         
-        console.log(`📊 Updating job ${jobId} progress: ${progress}% (${jobUpdate.processed}/${totalRecords} records)`)
-        await client.set(`import_job:${jobId}`, JSON.stringify(jobUpdate))
+        await client.execute({
+          sql: `UPDATE import_jobs SET 
+                status = ?, 
+                processed = ?, 
+                imported = ?, 
+                skipped = ?, 
+                errors = ?, 
+                error_details = ?, 
+                progress = ?, 
+                updated_at = CURRENT_TIMESTAMP 
+                WHERE job_id = ?`,
+          args: [
+            chunkIndex === totalChunks - 1 ? 'completed' : 'processing',
+            processed,
+            totalImported,
+            totalSkipped,
+            totalErrors,
+            JSON.stringify(allErrorDetails),
+            progress,
+            jobId
+          ]
+        })
+        
+        console.log(`📊 Updating job ${jobId} progress: ${progress}% (${processed}/${totalRecords} records)`)
         
         // Clean up chunk data
-        await client.del(`import_data:${jobId}:chunk_${chunkIndex}`)
+        await client.execute({
+          sql: 'DELETE FROM import_chunks WHERE job_id = ? AND chunk_index = ?',
+          args: [jobId, chunkIndex]
+        })
         
         console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} completed: ${chunkImported} imported, ${chunkSkipped} skipped, ${chunkErrors} errors`)
         
@@ -1321,14 +1393,12 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
     
     // Update job status to failed
     try {
-      const client = await getRedisClient()
+      const client = await getTursoClient()
       if (client) {
-        const jobUpdate = {
-          status: 'failed',
-          error: error.message,
-          updatedAt: new Date().toISOString()
-        }
-        await client.set(`import_job:${jobId}`, JSON.stringify(jobUpdate))
+        await client.execute({
+          sql: 'UPDATE import_jobs SET status = ?, error_details = ?, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?',
+          args: ['failed', JSON.stringify([{ line: 0, message: error.message }]), jobId]
+        })
       }
     } catch (updateError) {
       console.error('Failed to update job status:', updateError.message)
@@ -1342,17 +1412,36 @@ app.get('/api/import-status/:jobId', async (req, res) => {
     const jobId = req.params.jobId
     console.log(`Checking import status for job: ${jobId}`)
     
-    const client = await getRedisClient()
+    const client = await getTursoClient()
     if (!client) {
-      return res.status(500).json({ error: 'Redis client not available' })
+      return res.status(500).json({ error: 'Turso client not available' })
     }
     
-    const jobData = await client.get(`import_job:${jobId}`)
-    if (!jobData) {
+    const result = await client.execute({
+      sql: 'SELECT * FROM import_jobs WHERE job_id = ?',
+      args: [jobId]
+    })
+    
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Import job not found' })
     }
     
-    const job = JSON.parse(jobData)
+    const row = result.rows[0]
+    const job = {
+      id: row.job_id,
+      status: row.status,
+      totalRecords: row.total_records,
+      processed: row.processed,
+      imported: row.imported,
+      skipped: row.skipped,
+      errors: row.errors,
+      errorDetails: JSON.parse(row.error_details || '[]'),
+      progress: row.progress,
+      options: JSON.parse(row.options || '{}'),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }
+    
     console.log(`📊 Job ${jobId} status:`, job)
     res.json(job)
     
@@ -1364,12 +1453,12 @@ app.get('/api/import-status/:jobId', async (req, res) => {
 
 // Simple test endpoint
 app.get('/api/test', (_req, res) => {
-  res.json({ 
-    ok: true, 
-         message: 'Server is working',
+     res.json({ 
+     ok: true, 
+          message: 'Server is working',
      timestamp: new Date().toISOString(),
-     databaseType: 'redis'
-  })
+     databaseType: 'turso'
+   })
 })
 
 // Test asset storage
@@ -1396,15 +1485,18 @@ app.get('/api/test-asset-storage', async (_req, res) => {
     const count = await getAssetCount()
     console.log('🧪 Total asset count:', count)
     
-         // Clean up
-     try {
-       const client = await getRedisClient()
-       if (client) {
-         await client.del(`asset:${testAssetId}`)
-       }
-     } catch (error) {
-       console.warn('Failed to clean up test asset:', error.message)
-     }
+    // Clean up
+    try {
+      const client = await getTursoClient()
+      if (client) {
+        await client.execute({
+          sql: 'DELETE FROM assets WHERE asset_id = ?',
+          args: [testAssetId]
+        })
+      }
+    } catch (error) {
+      console.warn('Failed to clean up test asset:', error.message)
+    }
     
     res.json({
       ok: true,
@@ -1480,11 +1572,11 @@ app.get('/api/debug/assets', async (req, res) => {
       })
       .slice(0, 20)
     
-         res.json({
-       totalAssets: totalCount,
-       sampleAssets: assetIds,
-       message: `Redis has ${totalCount} total assets, showing first 20`
-     })
+                   res.json({
+        totalAssets: totalCount,
+        sampleAssets: assetIds,
+        message: `Turso has ${totalCount} total assets, showing first 20`
+      })
   } catch (error) {
     console.error('Debug assets error:', error)
     res.status(500).json({
@@ -1502,22 +1594,22 @@ app.get('/api/debug/asset/:assetId', async (req, res) => {
     // Get asset data from database
     const assetData = await getAsset(assetId)
     
-         if (assetData) {
-       console.log(`🔍 Found asset ${assetId} in Redis:`, assetData)
-       res.json({
-         assetId,
-         found: true,
-         databaseData: assetData,
-         message: 'Asset found in Redis'
-       })
-     } else {
-       console.log(`🔍 Asset ${assetId} not found in Redis`)
-       res.json({
-         assetId,
-         found: false,
-         message: 'Asset not found in Redis'
-       })
-     }
+                   if (assetData) {
+        console.log(`🔍 Found asset ${assetId} in Turso:`, assetData)
+        res.json({
+          assetId,
+          found: true,
+          databaseData: assetData,
+          message: 'Asset found in Turso'
+        })
+      } else {
+        console.log(`🔍 Asset ${assetId} not found in Turso`)
+        res.json({
+          assetId,
+          found: false,
+          message: 'Asset not found in Turso'
+        })
+      }
   } catch (error) {
     console.error(`🔍 Debug asset error for ${req.params.assetId}:`, error)
     res.status(500).json({ assetId: req.params.assetId, error: error.message })
@@ -1552,11 +1644,11 @@ app.get('/api/debug/cache', async (req, res) => {
   try {
     const totalCount = await getAssetCount()
     
-         res.json({
-       databaseType: 'redis',
-       totalAssets: totalCount,
-       message: `Redis has ${totalCount} assets`
-     })
+                   res.json({
+        databaseType: 'turso',
+        totalAssets: totalCount,
+        message: `Turso has ${totalCount} assets`
+      })
   } catch (error) {
     console.error('Debug database error:', error)
     res.status(500).json({
@@ -1583,7 +1675,7 @@ app.get('/api/export-database', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="database-backup-${new Date().toISOString().split('T')[0]}.json"`)
     res.json(exportData)
     
-         console.log(`✅ Exported ${rows.length} records from Redis`)
+                   console.log(`✅ Exported ${rows.length} records from Turso`)
   } catch (error) {
     console.error('Database export error:', error)
     res.status(500).json({
@@ -1703,27 +1795,27 @@ app.post('/api/import-database', async (req, res) => {
          }
        }
        
-       // Save batch to Blob Store
-       if (Object.keys(batchAssets).length > 0) {
-         try {
-           const batchResult = await setAssetsBatch(batchAssets)
-           imported += batchResult.successful
-           errors += batchResult.failed
-           
-           // Add any batch errors to error details
-           errorDetails.push(...batchErrors)
-           
-           // Debug: Log progress
-           console.log(`📊 Batch ${Math.floor(i / batchSize) + 1}: ${batchResult.successful} imported, ${batchResult.failed} failed`)
-         } catch (batchError) {
-           console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message)
-           errors += Object.keys(batchAssets).length
-           errorDetails.push({
-             line: i + 1,
-             message: `Batch failed: ${batchError.message}`
-           })
-         }
-       }
+               // Save batch to Turso
+        if (Object.keys(batchAssets).length > 0) {
+          try {
+            const batchResult = await setAssetsBatch(batchAssets)
+            imported += batchResult.successful
+            errors += batchResult.failed
+            
+            // Add any batch errors to error details
+            errorDetails.push(...batchErrors)
+            
+            // Debug: Log progress
+            console.log(`📊 Batch ${Math.floor(i / batchSize) + 1}: ${batchResult.successful} imported, ${batchResult.failed} failed`)
+          } catch (batchError) {
+            console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message)
+            errors += Object.keys(batchAssets).length
+            errorDetails.push({
+              line: i + 1,
+              message: `Batch failed: ${batchError.message}`
+            })
+          }
+        }
      }
     
     sendProgress(90, 'Finalizing import...')
