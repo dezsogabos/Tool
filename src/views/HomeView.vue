@@ -41,9 +41,10 @@ const MAX_CACHE_SIZE = 100 // Maximum number of cached items
 // Pre-fetching system for instant navigation
 const prefetchQueue = ref([]) // Queue of asset IDs to pre-fetch
 const isPrefetching = ref(false) // Flag to prevent multiple concurrent pre-fetch operations
-const PREFETCH_COUNT = 3 // Number of assets to pre-fetch ahead
+const PREFETCH_COUNT = 1 // Reduced from 3 to 1 to prevent overwhelming the system
 const prefetchedAssets = ref(new Set()) // Track which assets have been pre-fetched
 const prefetchProgress = ref(0) // Track prefetch progress (0-100)
+const prefetchEnabled = ref(true) // Allow disabling prefetching if it causes issues
 
 // Cache statistics tracking
 const cacheHits = ref(0)
@@ -1372,8 +1373,23 @@ async function prefetchAsset(assetId) {
       prefetchedAssets.value.add(assetId)
       console.log(`✅ Pre-fetched asset: ${assetId}`)
       
-      // Pre-load images for this asset
-      await prefetchAssetImages(data)
+      // Only pre-load reference image, skip predicted images to reduce load
+      if (data.reference?.fileId) {
+        try {
+          const referenceAssetId = data.reference.assetId || assetId
+          const referenceUrl = getImageUrl(data.reference.fileId, referenceAssetId)
+          const img = new Image()
+          img.onload = () => {
+            console.log(`🖼️ Pre-fetched reference image for asset: ${assetId}`)
+          }
+          img.onerror = () => {
+            console.log(`❌ Failed to pre-fetch reference image for asset: ${assetId}`)
+          }
+          img.src = referenceUrl
+        } catch (error) {
+          console.warn(`⚠️ Failed to pre-fetch reference image for asset ${assetId}:`, error)
+        }
+      }
     }
   } catch (error) {
     console.warn(`⚠️ Failed to pre-fetch asset ${assetId}:`, error)
@@ -1474,7 +1490,7 @@ async function prefetchAssetImages(assetData) {
 }
 
 async function prefetchNextAssets() {
-  if (isPrefetching.value || !assetId.value.trim() || ids.value.length === 0) {
+  if (!prefetchEnabled.value || isPrefetching.value || !assetId.value.trim() || ids.value.length === 0) {
     return
   }
   
@@ -1487,25 +1503,21 @@ async function prefetchNextAssets() {
     
     const assetsToPrefetch = []
     
-    // Get next PREFETCH_COUNT assets that haven't been pre-fetched yet
-    for (let i = 1; i <= PREFETCH_COUNT; i++) {
-      const nextIndex = currentIndex + i
-      if (nextIndex < ids.value.length) {
-        const nextAssetId = ids.value[nextIndex]
-        if (!prefetchedAssets.value.has(nextAssetId)) {
-          assetsToPrefetch.push(nextAssetId)
-        }
+    // Only prefetch next asset (reduced from multiple to prevent overwhelming)
+    const nextIndex = currentIndex + 1
+    if (nextIndex < ids.value.length) {
+      const nextAssetId = ids.value[nextIndex]
+      if (!prefetchedAssets.value.has(nextAssetId)) {
+        assetsToPrefetch.push(nextAssetId)
       }
     }
     
-    // Also prefetch previous assets for better navigation experience
-    for (let i = 1; i <= Math.min(2, PREFETCH_COUNT); i++) {
-      const prevIndex = currentIndex - i
-      if (prevIndex >= 0) {
-        const prevAssetId = ids.value[prevIndex]
-        if (!prefetchedAssets.value.has(prevAssetId)) {
-          assetsToPrefetch.push(prevAssetId)
-        }
+    // Only prefetch previous asset if it exists
+    const prevIndex = currentIndex - 1
+    if (prevIndex >= 0) {
+      const prevAssetId = ids.value[prevIndex]
+      if (!prefetchedAssets.value.has(prevAssetId)) {
+        assetsToPrefetch.push(prevAssetId)
       }
     }
     
@@ -1516,13 +1528,28 @@ async function prefetchNextAssets() {
     
     console.log(`🚀 Starting pre-fetch for ${assetsToPrefetch.length} assets`)
     
-    // Pre-fetch assets with progress tracking
+    // Pre-fetch assets with progress tracking and timeout
     for (let i = 0; i < assetsToPrefetch.length; i++) {
       try {
-        await prefetchAsset(assetsToPrefetch[i])
+        // Add timeout to prevent hanging
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Prefetch timeout')), 10000)
+        )
+        
+        await Promise.race([
+          prefetchAsset(assetsToPrefetch[i]),
+          timeoutPromise
+        ])
+        
         prefetchProgress.value = ((i + 1) / assetsToPrefetch.length) * 100
       } catch (error) {
         console.warn(`⚠️ Failed to prefetch asset ${assetsToPrefetch[i]}:`, error)
+        // If prefetching fails too much, disable it
+        if (error.message === 'Prefetch timeout') {
+          console.warn('⚠️ Prefetching timed out, disabling prefetching to prevent issues')
+          prefetchEnabled.value = false
+          break
+        }
       }
     }
     
@@ -1870,6 +1897,21 @@ async function refreshDbStatus() {
 onMounted(() => {
   refreshDbStatus()
 })
+
+// Function to clear all caches and reset prefetching
+function clearAllCaches() {
+  console.log('🧹 Clearing all caches and resetting prefetching system')
+  assetCache.value.clear()
+  imageUrlCache.value.clear()
+  prefetchedAssets.value.clear()
+  imageActualSources.value = {}
+  isPrefetching.value = false
+  prefetchProgress.value = 0
+  prefetchEnabled.value = true
+  cacheHits.value = 0
+  cacheMisses.value = 0
+  console.log('✅ All caches cleared and prefetching system reset')
+}
 
 </script>
 
@@ -2498,6 +2540,32 @@ onMounted(() => {
                </div>
 
 
+
+               <div class="action-group cache-management-section">
+                 <h3>Cache Management</h3>
+                 <p class="action-description">
+                   Manage the application's caching system. If you experience performance issues or the app seems stuck, try clearing the cache.
+                 </p>
+                 <div class="cache-stats">
+                   <p><strong>Cache Statistics:</strong></p>
+                   <ul>
+                     <li>Cache Hits: {{ cacheHits }}</li>
+                     <li>Cache Misses: {{ cacheMisses }}</li>
+                     <li>Prefetch Status: {{ prefetchEnabled ? 'Enabled' : 'Disabled' }}</li>
+                     <li>Prefetched Assets: {{ prefetchedAssets.size }}</li>
+                   </ul>
+                 </div>
+                 <button 
+                   class="warning-button" 
+                   @click="clearAllCaches"
+                 >
+                   <span class="warning-icon">🧹</span>
+                   Clear All Caches
+                 </button>
+                 <p class="cache-hint">
+                   <strong>💡 Tip:</strong> Clearing caches will reset the prefetching system and may improve performance if the app is running slowly.
+                 </p>
+               </div>
 
                <div class="action-group nuclear-option-section">
                  <h3>Review Data Management</h3>
@@ -4562,6 +4630,58 @@ input#assetId::placeholder {
  .danger-icon {
    font-size: 1.25rem;
  }
+
+/* Cache Management Styles */
+.cache-management-section {
+  border: 2px solid #f59e0b;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.05) 0%, rgba(245, 158, 11, 0.02) 100%);
+}
+
+.cache-stats {
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 8px;
+  padding: 15px;
+  margin: 15px 0;
+}
+
+.cache-stats ul {
+  margin: 10px 0;
+  padding-left: 20px;
+}
+
+.cache-stats li {
+  margin: 5px 0;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+}
+
+.warning-button {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin: 10px 0;
+}
+
+.warning-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
+.warning-icon {
+  margin-right: 8px;
+}
+
+.cache-hint {
+  font-size: 14px;
+  color: #666;
+  font-style: italic;
+  margin-top: 10px;
+}
 
  .cache-stats-display {
    display: grid;
