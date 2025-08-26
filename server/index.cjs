@@ -228,6 +228,39 @@ async function setAsset(assetId, data) {
   }
 }
 
+// Batch operations for improved performance
+async function setAssetsBatch(assetsData) {
+  try {
+    console.log(`🔍 Batch saving ${Object.keys(assetsData).length} assets to Blob Store`)
+    
+    const promises = []
+    for (const [assetId, data] of Object.entries(assetsData)) {
+      const key = `assets/${assetId}.json`
+      const jsonData = JSON.stringify(data)
+      
+      promises.push(
+        put(key, jsonData, {
+          access: 'public',
+          addRandomSuffix: false
+        }).catch(error => {
+          console.error(`❌ Failed to save asset ${assetId} in batch:`, error.message)
+          return { assetId, error: error.message }
+        })
+      )
+    }
+    
+    const results = await Promise.allSettled(promises)
+    const successful = results.filter(r => r.status === 'fulfilled').length
+    const failed = results.filter(r => r.status === 'rejected').length
+    
+    console.log(`✅ Batch save completed: ${successful} successful, ${failed} failed`)
+    return { successful, failed, results }
+  } catch (error) {
+    console.error('❌ Batch save failed:', error.message)
+    throw error
+  }
+}
+
 async function getAllAssets() {
   try {
     console.log('🔍 getAllAssets called - listing from Blob Store')
@@ -320,18 +353,26 @@ async function initializeDatabase() {
   const records = parse(content, { columns: true, skip_empty_lines: true })
   console.log('Parsed', records.length, 'records from CSV')
   
-  let imported = 0
-  for (const record of records) {
-    const assetId = String(record.asset_id ?? '').trim()
-    if (assetId) {
-      await setAsset(assetId, {
-        asset_id: assetId,
-        predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
-        matching_scores: String(record.matching_scores ?? '')
-      })
-      imported++
-    }
-  }
+     let imported = 0
+   const assetsToImport = {}
+   
+   for (const record of records) {
+     const assetId = String(record.asset_id ?? '').trim()
+     if (assetId) {
+       assetsToImport[assetId] = {
+         asset_id: assetId,
+         predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
+         matching_scores: String(record.matching_scores ?? '')
+       }
+     }
+   }
+   
+   if (Object.keys(assetsToImport).length > 0) {
+     console.log(`Importing ${Object.keys(assetsToImport).length} assets in batch...`)
+     const batchResult = await setAssetsBatch(assetsToImport)
+     imported = batchResult.successful
+     console.log(`Batch import result: ${batchResult.successful} successful, ${batchResult.failed} failed`)
+   }
   
   console.log(`✅ Imported ${imported} records from CSV to Blob Store`)
 }
@@ -906,29 +947,32 @@ app.post('/api/import-csv', async (req, res) => {
     const errorDetails = []
     const batchSize = parseInt(options.batchSize) || 1000
     
-    // Process records in batches
-    for (let i = 0; i < records.length; i += batchSize) {
-      const batch = records.slice(i, i + batchSize)
-      const progress = 40 + Math.floor((i / records.length) * 50)
-      
-      sendProgress(progress, `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)}...`)
-      
-      // Process batch
-      for (let j = 0; j < batch.length; j++) {
-        const record = batch[j]
-        const lineNumber = i + j + 2 // +2 for header row and 0-based index
-        
-        try {
-          const assetId = String(record.asset_id ?? '').trim()
-          const predictedAssetIds = String(record.predicted_asset_ids ?? '')
-          const matchingScores = String(record.matching_scores ?? '')
-          
-          if (!assetId) {
-            skipped++
-            continue
-          }
-          
-                     // Check for duplicates if skipDuplicates is enabled
+         // Process records in batches
+     for (let i = 0; i < records.length; i += batchSize) {
+       const batch = records.slice(i, i + batchSize)
+       const progress = 40 + Math.floor((i / records.length) * 50)
+       
+       sendProgress(progress, `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)}...`)
+       
+       // Prepare batch data
+       const batchAssets = {}
+       const batchErrors = []
+       
+       for (let j = 0; j < batch.length; j++) {
+         const record = batch[j]
+         const lineNumber = i + j + 2 // +2 for header row and 0-based index
+         
+         try {
+           const assetId = String(record.asset_id ?? '').trim()
+           const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+           const matchingScores = String(record.matching_scores ?? '')
+           
+           if (!assetId) {
+             skipped++
+             continue
+           }
+           
+           // Check for duplicates if skipDuplicates is enabled
            if (options.skipDuplicates) {
              const existing = await getAsset(assetId)
              if (existing) {
@@ -937,27 +981,43 @@ app.post('/api/import-csv', async (req, res) => {
              }
            }
            
-           await setAsset(assetId, {
+           batchAssets[assetId] = {
              asset_id: assetId,
              predicted_asset_ids: predictedAssetIds,
              matching_scores: matchingScores
-           })
-           imported++
-           
-           // Debug: Log every 100th import to track progress
-           if (imported % 100 === 0) {
-             console.log(`📊 Imported ${imported} assets so far...`)
            }
-        
-        } catch (error) {
-          errors++
-          errorDetails.push({
-            line: lineNumber,
-            message: error.message
-          })
-        }
-      }
-    }
+         
+         } catch (error) {
+           errors++
+           batchErrors.push({
+             line: lineNumber,
+             message: error.message
+           })
+         }
+       }
+       
+       // Save batch to Blob Store
+       if (Object.keys(batchAssets).length > 0) {
+         try {
+           const batchResult = await setAssetsBatch(batchAssets)
+           imported += batchResult.successful
+           errors += batchResult.failed
+           
+           // Add any batch errors to error details
+           errorDetails.push(...batchErrors)
+           
+           // Debug: Log progress
+           console.log(`📊 Batch ${Math.floor(i / batchSize) + 1}: ${batchResult.successful} imported, ${batchResult.failed} failed`)
+         } catch (batchError) {
+           console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message)
+           errors += Object.keys(batchAssets).length
+           errorDetails.push({
+             line: i + 1,
+             message: `Batch failed: ${batchError.message}`
+           })
+         }
+       }
+     }
     
     sendProgress(90, 'Finalizing import...')
     
@@ -1258,48 +1318,72 @@ app.post('/api/import-database', async (req, res) => {
     const errorDetails = []
     const batchSize = parseInt(options.batchSize) || 1000
     
-    // Process records in batches
-    for (let i = 0; i < records.length; i += batchSize) {
-      const batch = records.slice(i, i + batchSize)
-      const progress = 40 + Math.floor((i / records.length) * 50)
-      
-      sendProgress(progress, `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)}...`)
-      
-      // Process batch
-      for (let j = 0; j < batch.length; j++) {
-        const record = batch[j]
-        const lineNumber = i + j + 1
-        
-        try {
-          const assetId = String(record.asset_id ?? '').trim()
-          const predictedAssetIds = String(record.predicted_asset_ids ?? '')
-          const matchingScores = String(record.matching_scores ?? '')
-          
-          if (!assetId) {
-            errors++
-            errorDetails.push({
-              line: lineNumber,
-              message: 'Missing asset_id'
-            })
-            continue
-          }
-          
-          await setAsset(assetId, {
-            asset_id: assetId,
-            predicted_asset_ids: predictedAssetIds,
-            matching_scores: matchingScores
-          })
-          imported++
-          
-        } catch (error) {
-          errors++
-          errorDetails.push({
-            line: lineNumber,
-            message: error.message
-          })
-        }
-      }
-    }
+         // Process records in batches
+     for (let i = 0; i < records.length; i += batchSize) {
+       const batch = records.slice(i, i + batchSize)
+       const progress = 40 + Math.floor((i / records.length) * 50)
+       
+       sendProgress(progress, `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)}...`)
+       
+       // Prepare batch data
+       const batchAssets = {}
+       const batchErrors = []
+       
+       for (let j = 0; j < batch.length; j++) {
+         const record = batch[j]
+         const lineNumber = i + j + 1
+         
+         try {
+           const assetId = String(record.asset_id ?? '').trim()
+           const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+           const matchingScores = String(record.matching_scores ?? '')
+           
+           if (!assetId) {
+             errors++
+             batchErrors.push({
+               line: lineNumber,
+               message: 'Missing asset_id'
+             })
+             continue
+           }
+           
+           batchAssets[assetId] = {
+             asset_id: assetId,
+             predicted_asset_ids: predictedAssetIds,
+             matching_scores: matchingScores
+           }
+           
+         } catch (error) {
+           errors++
+           batchErrors.push({
+             line: lineNumber,
+             message: error.message
+           })
+         }
+       }
+       
+       // Save batch to Blob Store
+       if (Object.keys(batchAssets).length > 0) {
+         try {
+           const batchResult = await setAssetsBatch(batchAssets)
+           imported += batchResult.successful
+           errors += batchResult.failed
+           
+           // Add any batch errors to error details
+           errorDetails.push(...batchErrors)
+           
+           // Debug: Log progress
+           console.log(`📊 Batch ${Math.floor(i / batchSize) + 1}: ${batchResult.successful} imported, ${batchResult.failed} failed`)
+         } catch (batchError) {
+           console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message)
+           errors += Object.keys(batchAssets).length
+           errorDetails.push({
+             line: i + 1,
+             message: `Batch failed: ${batchError.message}`
+           })
+         }
+       }
+     }
     
     sendProgress(90, 'Finalizing import...')
     
