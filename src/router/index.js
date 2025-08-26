@@ -3,12 +3,14 @@ import { useAuthStore } from '../stores/auth'
 
 const LoginView = () => import('../views/LoginView.vue')
 const HomeView = () => import('../views/HomeView.vue')
+const ImportView = () => import('../views/ImportView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView },
     { path: '/', name: 'home', component: HomeView, meta: { requiresAuth: true } },
+    { path: '/import', name: 'import', component: ImportView, meta: { requiresAuth: true } },
   ],
 })
 

@@ -5,6 +5,7 @@ const { google } = require('googleapis')
 const dotenv = require('dotenv')
 const { parse } = require('csv-parse/sync')
 const Database = require('better-sqlite3')
+const fileUpload = require('express-fileupload')
 
 // Load env (if present)
 dotenv.config()
@@ -28,6 +29,11 @@ const app = express()
 // Middleware
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
+app.use(fileUpload({
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+  abortOnLimit: true,
+  createParentPath: true
+}))
 
 // CORS headers for Vercel
 app.use((req, res, next) => {
@@ -525,6 +531,173 @@ app.post('/api/assets-page-filtered', (req, res) => {
   } catch (e) {
     console.error('Error in /api/assets-page-filtered:', e)
     res.status(500).json({ error: e.message })
+  }
+})
+
+// Database status endpoint
+app.get('/api/db-status', (req, res) => {
+  try {
+    initializeDatabaseIfNeeded()
+    const db = getDb()
+    
+    const row = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
+    const totalRecords = row?.cnt || 0
+    
+    // Get last updated timestamp (we'll use current time for now)
+    const lastUpdated = new Date().toISOString()
+    
+    res.json({
+      totalRecords,
+      lastUpdated,
+      databaseType: process.env.NODE_ENV === 'production' ? 'in-memory' : 'file-based'
+    })
+  } catch (e) {
+    console.error('Error getting database status:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// CSV import endpoint
+app.post('/api/import-csv', async (req, res) => {
+  try {
+    console.log('CSV import request received')
+    
+    // Set headers for streaming response
+    res.setHeader('Content-Type', 'text/plain')
+    res.setHeader('Transfer-Encoding', 'chunked')
+    
+    const sendProgress = (progress, message) => {
+      const data = JSON.stringify({ type: 'progress', progress, message }) + '\n'
+      res.write(data)
+    }
+    
+    const sendResult = (result) => {
+      const data = JSON.stringify({ type: 'result', result }) + '\n'
+      res.write(data)
+      res.end()
+    }
+    
+    // Check if file was uploaded
+    if (!req.files || !req.files.file) {
+      sendResult({
+        totalRecords: 0,
+        imported: 0,
+        skipped: 0,
+        errors: 1,
+        errorDetails: [{ line: 0, message: 'No file uploaded' }]
+      })
+      return
+    }
+    
+    const file = req.files.file
+    const options = req.body.options ? JSON.parse(req.body.options) : {}
+    
+    console.log('Processing file:', file.name, 'Size:', file.size)
+    sendProgress(10, 'Reading CSV file...')
+    
+    // Parse CSV content
+    const content = file.data.toString('utf-8')
+    const records = parse(content, { columns: true, skip_empty_lines: true })
+    
+    console.log('Parsed', records.length, 'records from CSV')
+    sendProgress(30, `Parsed ${records.length} records, preparing database...`)
+    
+    // Initialize database
+    initializeDatabaseIfNeeded()
+    const db = getDb()
+    
+    // Clear existing data if requested
+    if (options.clearExisting) {
+      console.log('Clearing existing data...')
+      db.prepare('DELETE FROM assets').run()
+      sendProgress(40, 'Cleared existing data...')
+    }
+    
+    // Prepare insert statement
+    const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
+    
+    let imported = 0
+    let skipped = 0
+    let errors = 0
+    const errorDetails = []
+    const batchSize = parseInt(options.batchSize) || 1000
+    
+    // Process records in batches
+    for (let i = 0; i < records.length; i += batchSize) {
+      const batch = records.slice(i, i + batchSize)
+      const progress = 40 + Math.floor((i / records.length) * 50)
+      
+      sendProgress(progress, `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)}...`)
+      
+      // Process batch
+      for (let j = 0; j < batch.length; j++) {
+        const record = batch[j]
+        const lineNumber = i + j + 2 // +2 for header row and 0-based index
+        
+        try {
+          const assetId = String(record.asset_id ?? '').trim()
+          const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+          const matchingScores = String(record.matching_scores ?? '')
+          
+          if (!assetId) {
+            skipped++
+            continue
+          }
+          
+          // Check for duplicates if skipDuplicates is enabled
+          if (options.skipDuplicates) {
+            const existing = db.prepare('SELECT 1 FROM assets WHERE asset_id = ?').get(assetId)
+            if (existing) {
+              skipped++
+              continue
+            }
+          }
+          
+          insert.run(assetId, predictedAssetIds, matchingScores)
+          imported++
+          
+        } catch (error) {
+          errors++
+          errorDetails.push({
+            line: lineNumber,
+            message: error.message
+          })
+        }
+      }
+    }
+    
+    sendProgress(90, 'Finalizing import...')
+    
+    const result = {
+      totalRecords: records.length,
+      imported,
+      skipped,
+      errors,
+      errorDetails
+    }
+    
+    console.log('Import completed:', result)
+    sendProgress(100, 'Import completed successfully!')
+    sendResult(result)
+    
+  } catch (error) {
+    console.error('CSV import error:', error)
+    const errorResult = {
+      totalRecords: 0,
+      imported: 0,
+      skipped: 0,
+      errors: 1,
+      errorDetails: [{ line: 0, message: error.message }]
+    }
+    
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'application/json')
+      res.status(500).json(errorResult)
+    } else {
+      const data = JSON.stringify({ type: 'result', result: errorResult }) + '\n'
+      res.write(data)
+      res.end()
+    }
   }
 })
 
