@@ -1828,7 +1828,10 @@ const referenceImageUrl = computed(() => {
   }
   
   // Cache the URL
-  imageUrlCache.value.set(cacheKey, url)
+  imageUrlCache.value.set(cacheKey, {
+    url: url,
+    timestamp: Date.now()
+  })
   console.log(`🖼️ Cache MISS for image: ${referenceFileId.value} (key: ${cacheKey}) - Generated: ${url}`)
   return url
 })
@@ -1853,7 +1856,10 @@ const predictedImageUrls = computed(() => {
     }
     
     // Cache the URL
-    imageUrlCache.value.set(cacheKey, url)
+    imageUrlCache.value.set(cacheKey, {
+      url: url,
+      timestamp: Date.now()
+    })
     console.log(`🖼️ Cache MISS for image: ${p.fileId} (key: ${cacheKey}) - Generated: ${url}`)
     return { id: p.id, fileId: p.fileId, url }
   })
@@ -1877,7 +1883,10 @@ const previewImageUrl = computed(() => {
   }
   
   // Cache the URL
-  imageUrlCache.value.set(cacheKey, url)
+  imageUrlCache.value.set(cacheKey, {
+    url: url,
+    timestamp: Date.now()
+  })
   console.log(`🖼️ Cache MISS for image: ${previewImage.value.fileId} (key: ${cacheKey}) - Generated: ${url}`)
   return url
 })
