@@ -286,6 +286,15 @@ app.get('/api/health', (_req, res) => {
   try {
     console.log('Health check requested')
     
+    // Debug credentials
+    const apiCredentialsStr = process.env.api_credentials || process.env.API_CREDENTIALS || ''
+    const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || ''
+    
+    console.log('Credentials debug:')
+    console.log('- api_credentials length:', apiCredentialsStr.length)
+    console.log('- API_CREDENTIALS length:', (process.env.API_CREDENTIALS || '').length)
+    console.log('- GOOGLE_APPLICATION_CREDENTIALS:', credentialsPath)
+    
     // Test Google Drive API availability
     const drive = getDrive()
     const driveStatus = drive ? 'available' : 'not available'
@@ -300,7 +309,9 @@ app.get('/api/health', (_req, res) => {
         app_usr_set: !!process.env.app_usr,
         app_auth_set: !!process.env.app_auth,
         ALL_DATASET_FOLDER_ID: process.env.ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET',
-        GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET'
+        GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET',
+        api_credentials_length: apiCredentialsStr.length,
+        API_CREDENTIALS_length: (process.env.API_CREDENTIALS || '').length
       },
       googleDrive: driveStatus,
       message: 'Server is running'

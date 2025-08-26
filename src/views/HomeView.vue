@@ -2674,15 +2674,17 @@ onMounted(() => {
                  <p class="action-description">
                    Check the status of your Google Drive API configuration. This helps diagnose image loading issues.
                  </p>
-                 <div class="api-status" v-if="apiHealthStatus">
-                   <p><strong>API Status:</strong></p>
-                   <ul>
-                     <li>Google Drive API: <span :class="apiHealthStatus.googleDrive === 'available' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.googleDrive }}</span></li>
-                     <li>Environment: {{ apiHealthStatus.env.NODE_ENV || 'Not set' }}</li>
-                     <li>Folder ID: <span :class="apiHealthStatus.env.ALL_DATASET_FOLDER_ID === 'SET' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.ALL_DATASET_FOLDER_ID || 'Not set' }}</span></li>
-                     <li>Credentials: <span :class="apiHealthStatus.env.GOOGLE_APPLICATION_CREDENTIALS === 'SET' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.GOOGLE_APPLICATION_CREDENTIALS || 'Not set' }}</span></li>
-                   </ul>
-                 </div>
+                                    <div class="api-status" v-if="apiHealthStatus">
+                     <p><strong>API Status:</strong></p>
+                     <ul>
+                       <li>Google Drive API: <span :class="apiHealthStatus.googleDrive === 'available' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.googleDrive }}</span></li>
+                       <li>Environment: {{ apiHealthStatus.env.NODE_ENV || 'Not set' }}</li>
+                       <li>Folder ID: <span :class="apiHealthStatus.env.ALL_DATASET_FOLDER_ID === 'SET' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.ALL_DATASET_FOLDER_ID || 'Not set' }}</span></li>
+                       <li>Credentials (file): <span :class="apiHealthStatus.env.GOOGLE_APPLICATION_CREDENTIALS === 'SET' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.GOOGLE_APPLICATION_CREDENTIALS || 'Not set' }}</span></li>
+                       <li>Credentials (api_credentials): <span :class="apiHealthStatus.env.api_credentials_length > 0 ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.api_credentials_length > 0 ? 'SET (' + apiHealthStatus.env.api_credentials_length + ' chars)' : 'NOT SET' }}</span></li>
+                       <li>Credentials (API_CREDENTIALS): <span :class="apiHealthStatus.env.API_CREDENTIALS_length > 0 ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.API_CREDENTIALS_length > 0 ? 'SET (' + apiHealthStatus.env.API_CREDENTIALS_length + ' chars)' : 'NOT SET' }}</span></li>
+                     </ul>
+                   </div>
                  <button 
                    class="primary-button" 
                    @click="checkApiHealth"
