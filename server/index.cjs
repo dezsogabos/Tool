@@ -182,28 +182,34 @@ function getEdgeConfig() {
   return edgeConfigClient
 }
 
-// Asset storage functions using Vercel Blob Store
+// Asset storage functions using Vercel Blob Store - Single JSON file approach
 async function getAsset(assetId) {
   try {
-    const key = `assets/${assetId}.json`
-    console.log(`🔍 Getting asset ${assetId} from Blob Store with key: ${key}`)
+    console.log(`🔍 Getting asset ${assetId} from Blob Store`)
     
-    const blob = await head(key)
+    const blob = await head('assets/database.json')
     if (!blob) {
-      console.log(`🔍 Asset ${assetId} not found in Blob Store`)
+      console.log(`🔍 Database file not found in Blob Store`)
       return null
     }
     
     // Fetch the actual JSON data from the blob
     const response = await fetch(blob.url)
     if (!response.ok) {
-      console.log(`🔍 Failed to fetch asset ${assetId} data from Blob Store`)
+      console.log(`🔍 Failed to fetch database from Blob Store`)
       return null
     }
     
-    const data = await response.json()
-    console.log(`🔍 Asset ${assetId} retrieved from Blob Store`)
-    return data
+    const database = await response.json()
+    const data = database[assetId]
+    
+    if (data) {
+      console.log(`🔍 Asset ${assetId} retrieved from Blob Store`)
+      return data
+    } else {
+      console.log(`🔍 Asset ${assetId} not found in database`)
+      return null
+    }
   } catch (error) {
     console.warn(`Failed to get asset ${assetId} from Blob Store:`, error.message)
     return null
@@ -212,78 +218,135 @@ async function getAsset(assetId) {
 
 async function setAsset(assetId, data) {
   try {
-    const key = `assets/${assetId}.json`
-    const jsonData = JSON.stringify(data)
-    console.log(`🔍 setAsset called for ${assetId} - saving to Blob Store with key: ${key}`)
+    console.log(`🔍 setAsset called for ${assetId} - updating database in Blob Store`)
     
-    await put(key, jsonData, {
+    // Get existing database
+    let database = {}
+    try {
+      const blob = await head('assets/database.json')
+      if (blob) {
+        const response = await fetch(blob.url)
+        if (response.ok) {
+          database = await response.json()
+        }
+      }
+    } catch (error) {
+      console.log('No existing database found, creating new one')
+    }
+    
+    // Update the database
+    database[assetId] = data
+    
+    // Save the updated database
+    await put('assets/database.json', JSON.stringify(database), {
       access: 'public',
       addRandomSuffix: false
     })
     
-    console.log(`✅ Asset ${assetId} saved to Blob Store`)
+    console.log(`✅ Asset ${assetId} saved to database`)
   } catch (error) {
-    console.error(`❌ Failed to save asset ${assetId} to Blob Store:`, error.message)
+    console.error(`❌ Failed to save asset ${assetId} to database:`, error.message)
     throw error
   }
 }
 
-// Batch operations for improved performance
+// Batch operations for improved performance - Single JSON file approach
 async function setAssetsBatch(assetsData) {
   try {
-    console.log(`🔍 Batch saving ${Object.keys(assetsData).length} assets to Blob Store`)
+    console.log(`🔍 Batch saving ${Object.keys(assetsData).length} assets to database`)
     
-    const promises = []
-    for (const [assetId, data] of Object.entries(assetsData)) {
-      const key = `assets/${assetId}.json`
-      const jsonData = JSON.stringify(data)
-      
-      promises.push(
-        put(key, jsonData, {
-          access: 'public',
-          addRandomSuffix: false
-        }).catch(error => {
-          console.error(`❌ Failed to save asset ${assetId} in batch:`, error.message)
-          return { assetId, error: error.message }
-        })
-      )
+    // Get existing database
+    let database = {}
+    try {
+      const blob = await head('assets/database.json')
+      if (blob) {
+        const response = await fetch(blob.url)
+        if (response.ok) {
+          database = await response.json()
+        }
+      }
+    } catch (error) {
+      console.log('No existing database found, creating new one')
     }
     
-    const results = await Promise.allSettled(promises)
-    const successful = results.filter(r => r.status === 'fulfilled').length
-    const failed = results.filter(r => r.status === 'rejected').length
+    // Add all new assets to the database
+    let successful = 0
+    let failed = 0
+    const errors = []
+    
+    for (const [assetId, data] of Object.entries(assetsData)) {
+      try {
+        database[assetId] = data
+        successful++
+      } catch (error) {
+        console.error(`❌ Failed to add asset ${assetId} to batch:`, error.message)
+        failed++
+        errors.push({ assetId, error: error.message })
+      }
+    }
+    
+    // Save the updated database
+    await put('assets/database.json', JSON.stringify(database), {
+      access: 'public',
+      addRandomSuffix: false
+    })
     
     console.log(`✅ Batch save completed: ${successful} successful, ${failed} failed`)
-    return { successful, failed, results }
+    return { successful, failed, errors }
   } catch (error) {
     console.error('❌ Batch save failed:', error.message)
     throw error
   }
 }
 
-// Batch deletion for improved performance
+// Batch deletion for improved performance - Single JSON file approach
 async function deleteAssetsBatch(assetIds) {
   try {
-    console.log(`🔍 Batch deleting ${assetIds.length} assets from Blob Store`)
+    console.log(`🔍 Batch deleting ${assetIds.length} assets from database`)
     
-    const promises = []
-    for (const assetId of assetIds) {
-      const key = `assets/${assetId}.json`
-      
-      promises.push(
-        del(key).catch(error => {
-          console.error(`❌ Failed to delete asset ${assetId} in batch:`, error.message)
-          return { assetId, error: error.message }
-        })
-      )
+    // Get existing database
+    let database = {}
+    try {
+      const blob = await head('assets/database.json')
+      if (blob) {
+        const response = await fetch(blob.url)
+        if (response.ok) {
+          database = await response.json()
+        }
+      }
+    } catch (error) {
+      console.log('No existing database found, nothing to delete')
+      return { successful: 0, failed: 0, errors: [] }
     }
     
-    const results = await Promise.allSettled(promises)
-    const successful = results.filter(r => r.status === 'fulfilled').length
-    const failed = results.filter(r => r.status === 'rejected').length
+    // Remove assets from the database
+    let successful = 0
+    let failed = 0
+    const errors = []
+    
+    for (const assetId of assetIds) {
+      try {
+        if (database.hasOwnProperty(assetId)) {
+          delete database[assetId]
+          successful++
+        } else {
+          console.log(`Asset ${assetId} not found in database, skipping deletion`)
+        }
+      } catch (error) {
+        console.error(`❌ Failed to delete asset ${assetId} from batch:`, error.message)
+        failed++
+        errors.push({ assetId, error: error.message })
+      }
+    }
+    
+    // Save the updated database
+    await put('assets/database.json', JSON.stringify(database), {
+      access: 'public',
+      addRandomSuffix: false
+    })
     
     console.log(`✅ Batch deletion completed: ${successful} successful, ${failed} failed`)
-    return { successful, failed, results }
+    return { successful, failed, errors }
   } catch (error) {
     console.error('❌ Batch deletion failed:', error.message)
     throw error
@@ -292,76 +355,55 @@ async function deleteAssetsBatch(assetIds) {
 
 async function getAllAssets() {
   try {
-    console.log('🔍 getAllAssets called - listing from Blob Store')
+    console.log('🔍 getAllAssets called - reading from database')
     
-    const { blobs } = await list({ prefix: 'assets/' })
-    console.log(`🔍 Found ${blobs.length} assets in Blob Store`)
-    
-    const assets = {}
-    for (const blob of blobs) {
-      if (blob.pathname.endsWith('.json')) {
-        const assetId = blob.pathname.replace('assets/', '').replace('.json', '')
-        
-        try {
-          // Fetch the actual JSON data from the blob
-          const response = await fetch(blob.url)
-          if (response.ok) {
-            const data = await response.json()
-            assets[assetId] = data
-          }
-        } catch (fetchError) {
-          console.warn(`Failed to fetch data for asset ${assetId}:`, fetchError.message)
-          // Fallback to basic info if fetch fails
-          assets[assetId] = { asset_id: assetId, exists: true }
-        }
-      }
+    const blob = await head('assets/database.json')
+    if (!blob) {
+      console.log('🔍 Database file not found in Blob Store')
+      return {}
     }
     
-    console.log(`🔍 Blob Store returned ${Object.keys(assets).length} assets`)
-    return assets
+    // Fetch the actual JSON data from the blob
+    const response = await fetch(blob.url)
+    if (!response.ok) {
+      console.log('🔍 Failed to fetch database from Blob Store')
+      return {}
+    }
+    
+    const database = await response.json()
+    console.log(`🔍 Database returned ${Object.keys(database).length} assets`)
+    return database
   } catch (error) {
-    console.error('❌ Failed to get all assets from Blob Store:', error.message)
+    console.error('❌ Failed to get all assets from database:', error.message)
     return {}
   }
 }
 
 async function deleteAllAssets() {
   try {
-    console.log('🔍 deleteAllAssets called - clearing Blob Store')
+    console.log('🔍 deleteAllAssets called - clearing database')
     
-    const { blobs } = await list({ prefix: 'assets/' })
-    console.log(`🔍 Found ${blobs.length} assets to delete from Blob Store`)
-    
-    if (blobs.length === 0) {
-      console.log('✅ No assets to delete')
-      return
+    // Simply delete the database file
+    try {
+      await del('assets/database.json')
+      console.log('✅ Database file deleted successfully')
+    } catch (error) {
+      console.log('Database file not found or already deleted')
     }
     
-    // Extract asset IDs from blob paths
-    const assetIds = blobs
-      .filter(blob => blob.pathname.endsWith('.json'))
-      .map(blob => blob.pathname.replace('assets/', '').replace('.json', ''))
-    
-    console.log(`🔍 Extracted ${assetIds.length} asset IDs for batch deletion`)
-    
-    // Use batch deletion for better performance
-    const batchResult = await deleteAssetsBatch(assetIds)
-    console.log(`✅ Batch deletion result: ${batchResult.successful} successful, ${batchResult.failed} failed`)
-    
-    console.log(`✅ Cleared all assets from Blob Store`)
+    console.log(`✅ Cleared all assets from database`)
   } catch (error) {
-    console.error('❌ Failed to clear assets from Blob Store:', error.message)
+    console.error('❌ Failed to clear database:', error.message)
     throw error
   }
 }
 
 async function getAssetCount() {
   try {
-    const { blobs } = await list({ prefix: 'assets/' })
-    const assetBlobs = blobs.filter(blob => blob.pathname.endsWith('.json'))
-    return assetBlobs.length
+    const database = await getAllAssets()
+    return Object.keys(database).length
   } catch (error) {
-    console.warn('Failed to get asset count from Blob Store:', error.message)
+    console.warn('Failed to get asset count from database:', error.message)
     return 0
   }
 }
@@ -1136,12 +1178,19 @@ app.get('/api/test-asset-storage', async (_req, res) => {
     const count = await getAssetCount()
     console.log('🧪 Total asset count:', count)
     
-    // Clean up
-    try {
-      await del(`assets/${testAssetId}.json`)
-    } catch (error) {
-      console.warn('Failed to clean up test asset:', error.message)
-    }
+         // Clean up
+     try {
+       const database = await getAllAssets()
+       if (database[testAssetId]) {
+         delete database[testAssetId]
+         await put('assets/database.json', JSON.stringify(database), {
+           access: 'public',
+           addRandomSuffix: false
+         })
+       }
+     } catch (error) {
+       console.warn('Failed to clean up test asset:', error.message)
+     }
     
     res.json({
       ok: true,
