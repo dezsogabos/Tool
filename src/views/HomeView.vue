@@ -1864,6 +1864,12 @@ async function startImport() {
     // Refresh database status after import
     await refreshDbStatus()
     
+    // If import was successful and we're on the import tab, refresh the asset review
+    if (importResult.value && importResult.value.imported > 0) {
+      console.log('🔄 Import successful, refreshing asset review tab...')
+      await refreshAssetReviewAfterImport()
+    }
+    
   } catch (error) {
     console.error('Import error:', error)
     progressMessage.value = `Import failed: ${error.message}`
@@ -1890,6 +1896,41 @@ async function refreshDbStatus() {
     console.error('Failed to get database status:', error)
   } finally {
     refreshing.value = false
+  }
+}
+
+async function refreshAssetReviewAfterImport() {
+  console.log('🔄 Refreshing asset review after import...')
+  
+  try {
+    // Clear all caches to ensure fresh data
+    assetCache.value.clear()
+    prefetchedAssets.value.clear()
+    
+    // Reset current asset if it exists
+    if (assetId.value) {
+      assetId.value = ''
+      referenceFileId.value = ''
+      predicted.value = []
+      referenceDecision.value = ''
+      selectedPredictedIds.value = []
+      rejectedPredictedIds.value = []
+    }
+    
+    // Reload the current page to get updated asset list
+    await loadPage(page.value)
+    
+    // Show success message
+    console.log('✅ Asset review refreshed successfully after import')
+    
+    // Optionally switch to the review tab to show the new data
+    if (activeTab.value === 'import') {
+      console.log('🔄 Switching to review tab to show imported data...')
+      activeTab.value = 'review'
+    }
+    
+  } catch (error) {
+    console.error('❌ Error refreshing asset review after import:', error)
   }
 }
 
@@ -2430,6 +2471,20 @@ function clearAllCaches() {
                 <div class="stat-item">
                   <span class="stat-label">Errors:</span>
                   <span class="stat-value error">{{ importResult.errors }}</span>
+                </div>
+              </div>
+              
+              <!-- Success notification for successful imports -->
+              <div v-if="importResult.imported > 0" class="import-success-notification">
+                <div class="success-message">
+                  <span class="success-icon">✅</span>
+                  <div class="success-text">
+                    <strong>Import Successful!</strong>
+                    <p>The Asset Review tab has been automatically refreshed with the new data.</p>
+                    <button @click="activeTab = 'review'" class="view-data-btn">
+                      🏠 View Imported Data
+                    </button>
+                  </div>
                 </div>
               </div>
               
@@ -4681,6 +4736,57 @@ input#assetId::placeholder {
   color: #666;
   font-style: italic;
   margin-top: 10px;
+}
+
+/* Import Success Notification Styles */
+.import-success-notification {
+  margin: 20px 0;
+  padding: 15px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  border-radius: 8px;
+  color: white;
+}
+
+.success-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+}
+
+.success-icon {
+  font-size: 24px;
+  margin-top: 2px;
+}
+
+.success-text {
+  flex: 1;
+}
+
+.success-text strong {
+  font-size: 16px;
+  margin-bottom: 5px;
+  display: block;
+}
+
+.success-text p {
+  margin: 5px 0 15px 0;
+  opacity: 0.9;
+}
+
+.view-data-btn {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.3s ease;
+}
+
+.view-data-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
 }
 
  .cache-stats-display {
