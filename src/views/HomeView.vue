@@ -1900,7 +1900,7 @@ const referenceImageUrl = computed(() => {
   console.log(`🔍 referenceImageUrl computed - referenceFileId: "${referenceFileId.value}", offlineMode: ${offlineMode.value}, localImagePath: "${localImagePath.value}"`)
   
   // Check if referenceFileId is empty, null, or undefined
-  if (!referenceFileId.value || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
+  if (!referenceFileId.value || referenceFileId.value === null || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
     console.log(`🔍 No valid referenceFileId, returning empty string`)
     return ''
   }
@@ -2372,7 +2372,7 @@ onMounted(() => {
                                           <div class="grid">
                                             <div class="col ref" ref="referenceImageRef">
                                               <h3>Reference Image</h3>
-                                              <div class="reference-container" v-if="referenceFileId && referenceFileId !== 'null' && referenceFileId !== 'undefined'" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}`">
+                                              <div class="reference-container" v-if="referenceFileId && referenceFileId !== null && referenceFileId !== 'null' && referenceFileId !== 'undefined'" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}`">
                                                 <div class="reference-image-wrapper">
                                                   <img :src="referenceImageUrl" alt="reference" @load="handleImageLoad($event, referenceFileId, assetId)" @error="handleImageError($event, referenceFileId, assetId)" />
                                                   <div class="magnifier-icon" @click.stop="showReferenceImagePreview">
@@ -2392,7 +2392,7 @@ onMounted(() => {
                                                   </div>
                                                 </div>
                                               </div>
-                                              <div v-else-if="!loading && !error" class="no-reference-image" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}`">
+                                              <div v-else-if="!loading && !error && (!referenceFileId || referenceFileId === null || referenceFileId === 'null' || referenceFileId === 'undefined')" class="no-reference-image" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}`">
                                                 <div class="no-image-placeholder">
                                                   <div class="no-image-icon">🖼️</div>
                                                   <div class="no-image-text">
