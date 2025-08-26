@@ -191,9 +191,10 @@ function handleSearch() {
     console.log(`🔍 Cached data.reference:`, cachedData.reference)
     console.log(`🔍 Cached data.reference?.fileId:`, cachedData.reference?.fileId)
     
-    // Handle null fileId properly - null is valid when asset has no reference image
-    referenceFileId.value = cachedData.reference.fileId
-    console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
+    // Handle null fileId properly - ensure it stays null, not converted to string
+    const fileId = cachedData.reference.fileId
+    referenceFileId.value = fileId === null ? null : fileId
+    console.log(`🔍 Set referenceFileId.value to:`, referenceFileId.value)
     predicted.value = Array.isArray(cachedData.predicted) ? cachedData.predicted : []
     
     // Load existing review status if asset was previously reviewed
@@ -273,9 +274,13 @@ function handleSearch() {
       console.log(`🔍 Raw data.reference.fileId type:`, typeof data?.reference?.fileId)
       console.log(`🔍 Raw data.reference.fileId === null:`, data?.reference?.fileId === null)
       console.log(`🔍 About to assign: data?.reference?.fileId =`, data?.reference?.fileId)
-      referenceFileId.value = data?.reference?.fileId
+      
+      // Handle null value properly - ensure it stays null, not converted to string
+      const fileId = data?.reference?.fileId
+      referenceFileId.value = fileId === null ? null : fileId
+      
       console.log(`🔍 Immediately after assignment:`, referenceFileId.value)
-      console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
+      console.log(`🔍 Set referenceFileId.value to:`, referenceFileId.value)
       console.log(`🔍 referenceFileId.value type: ${typeof referenceFileId.value}`)
       console.log(`🔍 referenceFileId.value === null: ${referenceFileId.value === null}`)
       console.log(`🔍 referenceFileId.value === 'null': ${referenceFileId.value === 'null'}`)
