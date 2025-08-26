@@ -167,15 +167,14 @@ function loadDataset() {
 let dbInstance = null
 function getDb() {
   if (!dbInstance) {
-    // In serverless environment, use in-memory database
-    if (process.env.NODE_ENV === 'production') {
-      console.log('Using in-memory database for serverless environment')
-      dbInstance = new Database(':memory:')
-    } else {
-      const DB_PATH = path.resolve(__dirname, 'data.db')
-      console.log('Using file-based database for local development')
-      dbInstance = new Database(DB_PATH)
-    }
+    // Use file-based database for both local and production
+    // This ensures data persists across serverless function invocations
+    const DB_PATH = process.env.NODE_ENV === 'production' 
+      ? '/tmp/data.db'  // Use /tmp for Vercel serverless
+      : path.resolve(__dirname, 'data.db')
+    
+    console.log(`Using file-based database: ${DB_PATH}`)
+    dbInstance = new Database(DB_PATH)
   }
   return dbInstance
 }
@@ -202,24 +201,9 @@ function loadCsvIntoDbIfEmpty() {
     return
   }
   
-  // In production (serverless), use sample data since CSV won't be available
+  // In production, don't load sample data - let users import their own CSV
   if (process.env.NODE_ENV === 'production') {
-    console.log('Loading sample data for production environment')
-    const sampleData = [
-      { asset_id: '1', predicted_asset_ids: '["2", "3", "4"]', matching_scores: '[0.95, 0.87, 0.82]' },
-      { asset_id: '2', predicted_asset_ids: '["1", "3", "5"]', matching_scores: '[0.92, 0.89, 0.78]' },
-      { asset_id: '3', predicted_asset_ids: '["1", "2", "6"]', matching_scores: '[0.88, 0.85, 0.76]' },
-      { asset_id: '4', predicted_asset_ids: '["1", "5", "7"]', matching_scores: '[0.84, 0.81, 0.73]' },
-      { asset_id: '5', predicted_asset_ids: '["2", "4", "8"]', matching_scores: '[0.79, 0.77, 0.71]' }
-    ]
-    const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
-    const insertMany = db.transaction((rows) => {
-      for (const r of rows) {
-        insert.run(String(r.asset_id), String(r.predicted_asset_ids), String(r.matching_scores))
-      }
-    })
-    insertMany(sampleData)
-    console.log('Sample data import completed')
+    console.log('Production environment: Database is empty. Users should import CSV data.')
     return
   }
   
