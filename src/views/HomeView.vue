@@ -1667,6 +1667,7 @@ function getImageUrl(fileId, assetId = null) {
   // Check cache first - this should prevent most repeated calls
   const cachedUrl = getCachedImageUrl(fileId)
   if (cachedUrl) {
+    console.log(`🖼️ Using cached URL for fileId: ${fileId} - ${cachedUrl}`)
     return cachedUrl
   }
   
@@ -1688,20 +1689,25 @@ function getImageUrl(fileId, assetId = null) {
     // For offline mode, use the provided assetId as the filename
     const filename = assetId || fileId
     
+    console.log(`🔍 Offline mode - fileId: ${fileId}, assetId: ${assetId}, filename: ${filename}`)
+    
     // Validate that we have a proper assetId for local file lookup
     if (!assetId) {
       console.warn(`⚠️ No assetId provided for local file lookup, falling back to API for fileId: ${fileId}`)
       url = `/api/images/${fileId}`
     } else {
       url = `/api/local-images/${encodeURIComponent(filename)}?path=${encodeURIComponent(localImagePath.value)}`
+      console.log(`🔍 Generated local URL: ${url}`)
     }
   } else {
     // Fall back to online Google Drive API
     url = `/api/images/${fileId}`
+    console.log(`🔍 Generated API URL: ${url}`)
   }
   
   // Cache the URL
   setCachedImageUrl(fileId, url)
+  console.log(`🔍 Cached URL for fileId ${fileId}: ${url}`)
   return url
 }
 
