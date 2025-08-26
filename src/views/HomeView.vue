@@ -265,7 +265,10 @@ function handleSearch() {
       // Cache the fetched data
       setCachedAsset(currentAssetId, data)
       
-      referenceFileId.value = data?.reference?.fileId ?? ''
+      console.log(`🔍 Raw data.reference.fileId:`, data?.reference?.fileId)
+      console.log(`🔍 Raw data.reference.fileId type:`, typeof data?.reference?.fileId)
+      console.log(`🔍 Raw data.reference.fileId === null:`, data?.reference?.fileId === null)
+      referenceFileId.value = data?.reference?.fileId
       console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
       console.log(`🔍 referenceFileId.value type: ${typeof referenceFileId.value}`)
       console.log(`🔍 referenceFileId.value === null: ${referenceFileId.value === null}`)
@@ -743,7 +746,7 @@ function loadAssetImages(assetId) {
       return r.json()
     })
     .then((data) => {
-      referenceFileId.value = data?.reference?.fileId ?? ''
+      referenceFileId.value = data?.reference?.fileId
       predicted.value = Array.isArray(data?.predicted) ? data.predicted : []
       
       // Load existing review status if asset was previously reviewed
