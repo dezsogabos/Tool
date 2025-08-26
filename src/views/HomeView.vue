@@ -52,8 +52,6 @@ const cacheMisses = ref(0)
 
 // Debounce utility to prevent rapid successive calls
 let getImageUrlTimeout = null
-let getImageUrlCallCount = 0
-const MAX_GETIMAGEURL_CALLS = 1000 // Prevent infinite loops
 
 // Import functionality
 const selectedFile = ref(null)
@@ -1391,14 +1389,12 @@ function clearAllCaches() {
   imageActualSources.value = {} // Clear source tracking
   cacheHits.value = 0
   cacheMisses.value = 0
-  getImageUrlCallCount = 0 // Reset the call counter
   console.log('🧹 All caches and source tracking cleared')
 }
 
 // Function to clear only image URL cache
 function clearImageUrlCache() {
   imageUrlCache.value.clear()
-  getImageUrlCallCount = 0
   console.log('🧹 Image URL cache cleared')
 }
 
@@ -1672,21 +1668,7 @@ function getImageUrl(fileId, assetId = null) {
   // Check cache first - this should prevent most repeated calls
   const cachedUrl = getCachedImageUrl(fileId)
   if (cachedUrl) {
-    console.log(`🖼️ Using cached URL for fileId: ${fileId} - ${cachedUrl}`)
     return cachedUrl
-  }
-  
-  // Prevent infinite loops only if we're not using cache
-  getImageUrlCallCount++
-  if (getImageUrlCallCount > MAX_GETIMAGEURL_CALLS) {
-    console.error('getImageUrl called too many times, preventing infinite loop')
-    // Return a fallback URL instead of empty string
-    return `/api/images/${fileId}`
-  }
-  
-  // Clear any existing timeout
-  if (getImageUrlTimeout) {
-    clearTimeout(getImageUrlTimeout)
   }
   
   let url
@@ -1694,25 +1676,20 @@ function getImageUrl(fileId, assetId = null) {
     // For offline mode, use the provided assetId as the filename
     const filename = assetId || fileId
     
-    console.log(`🔍 Offline mode - fileId: ${fileId}, assetId: ${assetId}, filename: ${filename}`)
-    
     // Validate that we have a proper assetId for local file lookup
     if (!assetId) {
       console.warn(`⚠️ No assetId provided for local file lookup, falling back to API for fileId: ${fileId}`)
       url = `/api/images/${fileId}`
     } else {
       url = `/api/local-images/${encodeURIComponent(filename)}?path=${encodeURIComponent(localImagePath.value)}`
-      console.log(`🔍 Generated local URL: ${url}`)
     }
   } else {
     // Fall back to online Google Drive API
     url = `/api/images/${fileId}`
-    console.log(`🔍 Generated API URL: ${url}`)
   }
   
   // Cache the URL
   setCachedImageUrl(fileId, url)
-  console.log(`🔍 Cached URL for fileId ${fileId}: ${url}`)
   return url
 }
 
@@ -1736,6 +1713,25 @@ const predictedImageSources = computed(() => {
 const previewImageSource = computed(() => {
   if (!previewImage.value) return 'api'
   return imageActualSources.value[previewImage.value.fileId] || 'api'
+})
+
+// Computed properties for image URLs to prevent infinite loops
+const referenceImageUrl = computed(() => {
+  if (!referenceFileId.value) return ''
+  return getImageUrl(referenceFileId.value, assetId.value)
+})
+
+const predictedImageUrls = computed(() => {
+  return predicted.value.map(p => ({
+    id: p.id,
+    fileId: p.fileId,
+    url: p.fileId ? getImageUrl(p.fileId, p.id) : ''
+  }))
+})
+
+const previewImageUrl = computed(() => {
+  if (!previewImage.value?.fileId) return ''
+  return getImageUrl(previewImage.value.fileId, assetId.value)
 })
 
 function handleImageLoad(event, fileId, assetId = null) {
@@ -2124,7 +2120,7 @@ onMounted(() => {
                                               <h3>Reference Image</h3>
                                               <div class="reference-container" v-if="referenceFileId">
                                                 <div class="reference-image-wrapper">
-                                                  <img :src="getImageUrl(referenceFileId, assetId)" alt="reference" @load="handleImageLoad($event, referenceFileId, assetId)" @error="handleImageError($event, referenceFileId, assetId)" />
+                                                  <img :src="referenceImageUrl" alt="reference" @load="handleImageLoad($event, referenceFileId, assetId)" @error="handleImageError($event, referenceFileId, assetId)" />
                                                   <div class="magnifier-icon" @click.stop="showReferenceImagePreview">
                                                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                                       <circle cx="11" cy="11" r="8"></circle>
@@ -2223,7 +2219,7 @@ onMounted(() => {
                                                     @click="togglePredSelected(p.id)"
                                                     @contextmenu.prevent="togglePredRejected(p.id)"
                                                   >
-                                                    <img v-if="p.fileId" :src="getImageUrl(p.fileId, p.id)" :alt="p.id" @load="handleImageLoad($event, p.fileId, p.id)" @error="handleImageError($event, p.fileId, p.id)" />
+                                                    <img v-if="p.fileId" :src="predictedImageUrls.find(pu => pu.id === p.id)?.url || ''" :alt="p.id" @load="handleImageLoad($event, p.fileId, p.id)" @error="handleImageError($event, p.fileId, p.id)" />
                                                     <div class="magnifier-icon" @click.stop="showImagePreview(p)">
                                                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                                         <circle cx="11" cy="11" r="8"></circle>
@@ -2247,7 +2243,7 @@ onMounted(() => {
                                               <!-- Image Preview Modal -->
                                               <div v-if="previewImage" class="image-preview-modal" @click="hideImagePreview">
                                                 <div class="preview-content" @click.stop>
-                                                  <img :src="getImageUrl(previewImage.fileId, assetId)" :alt="previewImage.id" @load="handleImageLoad($event, previewImage.fileId, assetId)" @error="handleImageError($event, previewImage.fileId, assetId)" />
+                                                  <img :src="previewImageUrl" :alt="previewImage.id" @load="handleImageLoad($event, previewImage.fileId, assetId)" @error="handleImageError($event, previewImage.fileId, assetId)" />
                                                   <div class="preview-info">
                                                     <span class="preview-id">ID: {{ previewImage.id }}</span>
                                                     <span v-if="previewImage.score != null" class="preview-score">Score: {{ Number(previewImage.score).toFixed(2) }}</span>
