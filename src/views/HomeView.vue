@@ -265,7 +265,7 @@ function handleSearch() {
       // Cache the fetched data
       setCachedAsset(currentAssetId, data)
       
-      referenceFileId.value = data?.reference?.fileId || ''
+      referenceFileId.value = data?.reference?.fileId ?? ''
       console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
       console.log(`🔍 referenceFileId.value type: ${typeof referenceFileId.value}`)
       console.log(`🔍 referenceFileId.value === null: ${referenceFileId.value === null}`)
@@ -663,7 +663,7 @@ function scrollToReferenceImage() {
   console.log('🔍 !referenceFileId.value:', !referenceFileId.value)
   
   // Only attempt to scroll if we have a reference file ID (meaning there should be a reference image)
-  if (!referenceFileId.value || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
+  if (!referenceFileId.value || referenceFileId.value === null || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
     console.log('No reference file ID, skipping scroll')
     return
   }
@@ -743,7 +743,7 @@ function loadAssetImages(assetId) {
       return r.json()
     })
     .then((data) => {
-      referenceFileId.value = data?.reference?.fileId || ''
+      referenceFileId.value = data?.reference?.fileId ?? ''
       predicted.value = Array.isArray(data?.predicted) ? data.predicted : []
       
       // Load existing review status if asset was previously reviewed
