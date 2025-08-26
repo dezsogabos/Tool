@@ -112,24 +112,39 @@ if (!ALL_DATASET_FOLDER_ID) {
 let driveClient = null
 function getDrive() {
   if (driveClient) return driveClient
-  let serviceAccountInfo = null
-  if (apiCredentialsStr) {
-    serviceAccountInfo = JSON.parse(apiCredentialsStr)
-  } else if (credentialsPath && fs.existsSync(path.resolve(__dirname, credentialsPath))) {
-    const raw = fs.readFileSync(path.resolve(__dirname, credentialsPath), 'utf-8')
-    serviceAccountInfo = JSON.parse(raw)
-  } else if (credentialsPath && fs.existsSync(credentialsPath)) {
-    const raw = fs.readFileSync(credentialsPath, 'utf-8')
-    serviceAccountInfo = JSON.parse(raw)
-  } else {
-    throw new Error('Missing Google API credentials. Provide api_credentials (JSON string) or GOOGLE_APPLICATION_CREDENTIALS path via env/server/config.json')
+  
+  // If no Google Drive credentials are configured, return null
+  if (!ALL_DATASET_FOLDER_ID || (!apiCredentialsStr && !credentialsPath)) {
+    console.log('Google Drive API not configured - running in offline mode')
+    return null
   }
-  const auth = new (require('googleapis').google.auth.GoogleAuth)({
-    credentials: serviceAccountInfo,
-    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-  })
-  driveClient = require('googleapis').google.drive({ version: 'v3', auth })
-  return driveClient
+  
+  let serviceAccountInfo = null
+  try {
+    if (apiCredentialsStr) {
+      serviceAccountInfo = JSON.parse(apiCredentialsStr)
+    } else if (credentialsPath && fs.existsSync(path.resolve(__dirname, credentialsPath))) {
+      const raw = fs.readFileSync(path.resolve(__dirname, credentialsPath), 'utf-8')
+      serviceAccountInfo = JSON.parse(raw)
+    } else if (credentialsPath && fs.existsSync(credentialsPath)) {
+      const raw = fs.readFileSync(credentialsPath, 'utf-8')
+      serviceAccountInfo = JSON.parse(raw)
+    } else {
+      console.warn('Google Drive API credentials not found - running in offline mode')
+      return null
+    }
+    
+    const auth = new (require('googleapis').google.auth.GoogleAuth)({
+      credentials: serviceAccountInfo,
+      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    })
+    driveClient = require('googleapis').google.drive({ version: 'v3', auth })
+    return driveClient
+  } catch (error) {
+    console.error('Error initializing Google Drive API:', error.message)
+    console.warn('Running in offline mode without Google Drive API')
+    return null
+  }
 }
 
 let dataset = null
@@ -215,11 +230,21 @@ function parseArrayField(value) {
 
 async function getFileIdByAssetId(assetId) {
   const drive = getDrive()
-  const fileName = `${assetId}.jpg`
-  const q = `name='${fileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
-  const res = await drive.files.list({ q, fields: 'files(id, name)' })
-  const items = res.data.files || []
-  return items.length ? items[0].id : null
+  if (!drive) {
+    console.log(`Google Drive not available for asset ${assetId}`)
+    return null
+  }
+  
+  try {
+    const fileName = `${assetId}.jpg`
+    const q = `name='${fileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
+    const res = await drive.files.list({ q, fields: 'files(id, name)' })
+    const items = res.data.files || []
+    return items.length ? items[0].id : null
+  } catch (error) {
+    console.error(`Error getting file ID for asset ${assetId}:`, error.message)
+    return null
+  }
 }
 
 app.get('/api/health', (_req, res) => {
@@ -322,7 +347,12 @@ app.get('/api/images/:fileId', async (req, res) => {
   try {
     const { fileId } = req.params
     if (!fileId) return res.status(400).send('fileId required')
+    
     const drive = getDrive()
+    if (!drive) {
+      return res.status(503).send('Google Drive API not available')
+    }
+    
     res.setHeader('Content-Type', 'image/jpeg')
     const dl = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' })
     dl.data
@@ -330,7 +360,7 @@ app.get('/api/images/:fileId', async (req, res) => {
       .on('error', (err) => { console.error('Download error', err); res.end() })
       .pipe(res)
   } catch (e) {
-    console.error(e)
+    console.error('Error serving image:', e)
     res.status(500).send('Failed to fetch image')
   }
 })
@@ -469,9 +499,12 @@ app.post('/api/assets-page-filtered', (req, res) => {
   }
 })
 
-// Initialize database on server startup
-console.log('Initializing database...')
-loadCsvIntoDbIfEmpty()
+// Initialize database on server startup (only once)
+if (!global.dbInitialized) {
+  console.log('Initializing database...')
+  loadCsvIntoDbIfEmpty()
+  global.dbInitialized = true
+}
 
 // For Vercel serverless deployment
 if (process.env.NODE_ENV === 'production') {
