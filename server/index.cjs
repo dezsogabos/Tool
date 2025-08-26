@@ -6,6 +6,7 @@ const dotenv = require('dotenv')
 const { parse } = require('csv-parse/sync')
 const fileUpload = require('express-fileupload')
 const { createClient } = require('@vercel/edge-config')
+const { put, del, list, head } = require('@vercel/blob')
 
 // Load env (if present)
 dotenv.config()
@@ -163,12 +164,8 @@ function loadDataset() {
   dataset = records
 }
 
-// Global in-memory database that persists across serverless function invocations
-// Use global variable to maintain state between function calls
-if (!global.assetDatabase) {
-  global.assetDatabase = new Map()
-}
-let assetDatabase = global.assetDatabase
+// Vercel Blob Store for persistent data storage
+// This ensures data persists between serverless function invocations and sessions
 
 // Edge Config client setup (for configuration only, not data storage)
 let edgeConfigClient = null
@@ -185,32 +182,117 @@ function getEdgeConfig() {
   return edgeConfigClient
 }
 
-// Asset storage functions
+// Asset storage functions using Vercel Blob Store
 async function getAsset(assetId) {
-  return assetDatabase.get(assetId) || null
+  try {
+    const key = `assets/${assetId}.json`
+    console.log(`🔍 Getting asset ${assetId} from Blob Store with key: ${key}`)
+    
+    const blob = await head(key)
+    if (!blob) {
+      console.log(`🔍 Asset ${assetId} not found in Blob Store`)
+      return null
+    }
+    
+    // Fetch the actual JSON data from the blob
+    const response = await fetch(blob.url)
+    if (!response.ok) {
+      console.log(`🔍 Failed to fetch asset ${assetId} data from Blob Store`)
+      return null
+    }
+    
+    const data = await response.json()
+    console.log(`🔍 Asset ${assetId} retrieved from Blob Store`)
+    return data
+  } catch (error) {
+    console.warn(`Failed to get asset ${assetId} from Blob Store:`, error.message)
+    return null
+  }
 }
 
 async function setAsset(assetId, data) {
-  console.log(`🔍 setAsset called for ${assetId}`)
-  assetDatabase.set(assetId, data)
-  console.log(`✅ Asset ${assetId} saved to in-memory database`)
+  try {
+    const key = `assets/${assetId}.json`
+    const jsonData = JSON.stringify(data)
+    console.log(`🔍 setAsset called for ${assetId} - saving to Blob Store with key: ${key}`)
+    
+    await put(key, jsonData, {
+      access: 'public',
+      addRandomSuffix: false
+    })
+    
+    console.log(`✅ Asset ${assetId} saved to Blob Store`)
+  } catch (error) {
+    console.error(`❌ Failed to save asset ${assetId} to Blob Store:`, error.message)
+    throw error
+  }
 }
 
 async function getAllAssets() {
-  console.log('🔍 getAllAssets called')
-  const assets = Object.fromEntries(assetDatabase)
-  console.log(`🔍 In-memory database returned ${Object.keys(assets).length} assets`)
-  return assets
+  try {
+    console.log('🔍 getAllAssets called - listing from Blob Store')
+    
+    const { blobs } = await list({ prefix: 'assets/' })
+    console.log(`🔍 Found ${blobs.length} assets in Blob Store`)
+    
+    const assets = {}
+    for (const blob of blobs) {
+      if (blob.pathname.endsWith('.json')) {
+        const assetId = blob.pathname.replace('assets/', '').replace('.json', '')
+        
+        try {
+          // Fetch the actual JSON data from the blob
+          const response = await fetch(blob.url)
+          if (response.ok) {
+            const data = await response.json()
+            assets[assetId] = data
+          }
+        } catch (fetchError) {
+          console.warn(`Failed to fetch data for asset ${assetId}:`, fetchError.message)
+          // Fallback to basic info if fetch fails
+          assets[assetId] = { asset_id: assetId, exists: true }
+        }
+      }
+    }
+    
+    console.log(`🔍 Blob Store returned ${Object.keys(assets).length} assets`)
+    return assets
+  } catch (error) {
+    console.error('❌ Failed to get all assets from Blob Store:', error.message)
+    return {}
+  }
 }
 
 async function deleteAllAssets() {
-  console.log('🔍 deleteAllAssets called')
-  assetDatabase.clear()
-  console.log(`✅ Cleared all assets from in-memory database`)
+  try {
+    console.log('🔍 deleteAllAssets called - clearing Blob Store')
+    
+    const { blobs } = await list({ prefix: 'assets/' })
+    console.log(`🔍 Found ${blobs.length} assets to delete from Blob Store`)
+    
+    for (const blob of blobs) {
+      if (blob.pathname.endsWith('.json')) {
+        await del(blob.url)
+        console.log(`🗑️ Deleted ${blob.pathname} from Blob Store`)
+      }
+    }
+    
+    console.log(`✅ Cleared all assets from Blob Store`)
+  } catch (error) {
+    console.error('❌ Failed to clear assets from Blob Store:', error.message)
+    throw error
+  }
 }
 
 async function getAssetCount() {
-  return assetDatabase.size
+  try {
+    const { blobs } = await list({ prefix: 'assets/' })
+    const assetBlobs = blobs.filter(blob => blob.pathname.endsWith('.json'))
+    return assetBlobs.length
+  } catch (error) {
+    console.warn('Failed to get asset count from Blob Store:', error.message)
+    return 0
+  }
 }
 
 // Initialize database with sample data if empty (local development only)
@@ -220,8 +302,10 @@ async function initializeDatabase() {
     return
   }
   
-  if (assetDatabase.size > 0) {
-    console.log(`Database already has ${assetDatabase.size} assets`)
+  // Check if we already have assets in Blob Store
+  const count = await getAssetCount()
+  if (count > 0) {
+    console.log(`Database already has ${count} assets`)
     return
   }
   
@@ -240,7 +324,7 @@ async function initializeDatabase() {
   for (const record of records) {
     const assetId = String(record.asset_id ?? '').trim()
     if (assetId) {
-      assetDatabase.set(assetId, {
+      await setAsset(assetId, {
         asset_id: assetId,
         predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
         matching_scores: String(record.matching_scores ?? '')
@@ -249,7 +333,7 @@ async function initializeDatabase() {
     }
   }
   
-  console.log(`✅ Imported ${imported} records from CSV`)
+  console.log(`✅ Imported ${imported} records from CSV to Blob Store`)
 }
 
 // Initialize database on startup
@@ -480,11 +564,11 @@ app.get('/api/assets/:assetId', async (req, res) => {
     const searchId = String(req.params.assetId).trim()
     if (!searchId) return res.status(400).json({ error: 'assetId required' })
 
-         // Get asset from in-memory database
+         // Get asset from Blob Store
      const assetData = await getAsset(searchId)
      
      if (!assetData) {
-       console.log(`🔍 Asset ${searchId} not found in database`)
+       console.log(`🔍 Asset ${searchId} not found in Blob Store`)
       return res.json({ 
         assetId: searchId, 
         reference: { fileId: null },
@@ -665,9 +749,9 @@ app.get('/api/assets-page', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1)
     const offset = (page - 1) * pageSize
     
-              console.log('Querying in-memory database for page', page, 'size', pageSize)
+              console.log('Querying Blob Store for page', page, 'size', pageSize)
      
-     // Get all assets from in-memory database
+     // Get all assets from Blob Store
      const allAssets = await getAllAssets()
      const assetIds = Object.keys(allAssets).sort((a, b) => {
        const aNum = parseInt(a) || 0
@@ -676,7 +760,7 @@ app.get('/api/assets-page', async (req, res) => {
      })
      
      const total = assetIds.length
-     console.log('Total assets in database:', total)
+     console.log('Total assets in Blob Store:', total)
     
     const pageIds = assetIds.slice(offset, offset + pageSize)
     console.log('Retrieved', pageIds.length, 'asset IDs for page')
@@ -704,9 +788,9 @@ app.post('/api/assets-page-filtered', async (req, res) => {
     const filter = req.body.filter || 'all'
     const reviewedAssets = req.body.reviewedAssets || {}
     
-              console.log('Querying in-memory database for page', page, 'size', pageSize, 'filter:', filter)
+              console.log('Querying Blob Store for page', page, 'size', pageSize, 'filter:', filter)
      
-     // Get all asset IDs from in-memory database
+     // Get all asset IDs from Blob Store
      const allAssets = await getAllAssets()
      const allIds = Object.keys(allAssets).sort((a, b) => {
        const aNum = parseInt(a) || 0
@@ -731,7 +815,7 @@ app.post('/api/assets-page-filtered', async (req, res) => {
      const offset = (page - 1) * pageSize
      const pageIds = filteredIds.slice(offset, offset + pageSize)
      
-     console.log('Total assets in database:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
+     console.log('Total assets in Blob Store:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
     
     res.json({
       page,
@@ -756,7 +840,7 @@ app.get('/api/db-status', async (req, res) => {
          res.json({
        totalRecords,
        lastUpdated,
-       databaseType: 'in-memory'
+       databaseType: 'blob-store'
      })
   } catch (e) {
     console.error('Error getting database status:', e)
@@ -926,7 +1010,7 @@ app.get('/api/test', (_req, res) => {
     ok: true, 
          message: 'Server is working',
      timestamp: new Date().toISOString(),
-     databaseType: 'in-memory'
+     databaseType: 'blob-store'
   })
 })
 
@@ -954,8 +1038,12 @@ app.get('/api/test-asset-storage', async (_req, res) => {
     const count = await getAssetCount()
     console.log('🧪 Total asset count:', count)
     
-    // Clean up
-    assetDatabase.delete(testAssetId)
+         // Clean up
+     try {
+       await del(`assets/${testAssetId}.json`)
+     } catch (error) {
+       console.warn('Failed to clean up test asset:', error.message)
+     }
     
     res.json({
       ok: true,
@@ -994,7 +1082,7 @@ app.get('/api/debug/assets', async (req, res) => {
          res.json({
        totalAssets: totalCount,
        sampleAssets: assetIds,
-       message: `Database has ${totalCount} total assets, showing first 20`
+       message: `Blob Store has ${totalCount} total assets, showing first 20`
      })
   } catch (error) {
     console.error('Debug assets error:', error)
@@ -1014,19 +1102,19 @@ app.get('/api/debug/asset/:assetId', async (req, res) => {
     const assetData = await getAsset(assetId)
     
          if (assetData) {
-       console.log(`🔍 Found asset ${assetId} in database:`, assetData)
+       console.log(`🔍 Found asset ${assetId} in Blob Store:`, assetData)
        res.json({
          assetId,
          found: true,
          databaseData: assetData,
-         message: 'Asset found in database'
+         message: 'Asset found in Blob Store'
        })
      } else {
-       console.log(`🔍 Asset ${assetId} not found in database`)
+       console.log(`🔍 Asset ${assetId} not found in Blob Store`)
        res.json({
          assetId,
          found: false,
-         message: 'Asset not found in database'
+         message: 'Asset not found in Blob Store'
        })
      }
   } catch (error) {
@@ -1064,9 +1152,9 @@ app.get('/api/debug/cache', async (req, res) => {
     const totalCount = await getAssetCount()
     
          res.json({
-       databaseType: 'in-memory',
+       databaseType: 'blob-store',
        totalAssets: totalCount,
-       message: `Database has ${totalCount} assets`
+       message: `Blob Store has ${totalCount} assets`
      })
   } catch (error) {
     console.error('Debug database error:', error)
@@ -1094,7 +1182,7 @@ app.get('/api/export-database', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="database-backup-${new Date().toISOString().split('T')[0]}.json"`)
     res.json(exportData)
     
-         console.log(`✅ Exported ${rows.length} records from database`)
+         console.log(`✅ Exported ${rows.length} records from Blob Store`)
   } catch (error) {
     console.error('Database export error:', error)
     res.status(500).json({
