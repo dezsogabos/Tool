@@ -194,7 +194,14 @@ function handleSearch() {
     console.log(`🔍 Cached data.reference !== undefined:`, cachedData.reference !== undefined)
   }
   
-  if (cachedData && cachedData.reference !== undefined) {
+  // Check for stale cache data (null fileId indicates stale data from before CSV import)
+  if (cachedData && cachedData.reference !== undefined && cachedData.reference.fileId === null) {
+    console.log(`🧹 Detected stale cache for asset ${currentAssetId} (fileId is null)`)
+    console.log(`🧹 Clearing cache and forcing fresh API call`)
+    assetCache.value.delete(currentAssetId)
+    prefetchedAssets.value.delete(currentAssetId)
+    // Continue to API fetch below
+  } else if (cachedData && cachedData.reference !== undefined) {
     console.log(`🚀 Using cached data for asset: ${currentAssetId}`)
     
     // Handle null fileId properly - ensure it stays null, not converted to string
@@ -1627,6 +1634,20 @@ function forceRefreshAsset(assetId) {
     console.log(`🔄 Refreshing current asset: ${assetId}`)
     handleSearch()
   }
+}
+
+// Function to clear all cache and force fresh API calls for all assets
+function clearAllCacheAndRefresh() {
+  console.log('🧹 Clearing ALL cache data')
+  clearAllCaches()
+  
+  // Force refresh current asset if one is loaded
+  if (assetId.value.trim()) {
+    console.log(`🔄 Refreshing current asset: ${assetId.value}`)
+    handleSearch()
+  }
+  
+  console.log('✅ All cache cleared - next navigation will use fresh API calls')
 }
 
 // Debug function to check what's in the database for an asset
