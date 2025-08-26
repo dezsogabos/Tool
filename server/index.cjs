@@ -911,6 +911,40 @@ app.get('/api/debug/assets', (req, res) => {
   }
 })
 
+// Debug endpoint to get specific asset data from database
+app.get('/api/debug/asset/:assetId', (req, res) => {
+  try {
+    const assetId = req.params.assetId
+    console.log(`🔍 Debug request for asset: ${assetId}`)
+    
+    initializeDatabaseIfNeeded()
+    const db = getDb()
+    
+    // Get asset data from database
+    const row = db.prepare('SELECT * FROM assets WHERE asset_id = ?').get(assetId)
+    
+    if (row) {
+      console.log(`🔍 Found asset ${assetId} in database:`, row)
+      res.json({
+        assetId,
+        found: true,
+        databaseData: row,
+        message: 'Asset found in database'
+      })
+    } else {
+      console.log(`🔍 Asset ${assetId} not found in database`)
+      res.json({
+        assetId,
+        found: false,
+        message: 'Asset not found in database'
+      })
+    }
+  } catch (error) {
+    console.error(`🔍 Debug asset error for ${req.params.assetId}:`, error)
+    res.status(500).json({ assetId: req.params.assetId, error: error.message })
+  }
+})
+
 // Test endpoint for debugging specific assets
 app.get('/api/test-asset/:assetId', async (req, res) => {
   try {
