@@ -1875,6 +1875,14 @@ onMounted(() => {
 
 <template>
   <div class="home" :class="{ 'dark-mode': darkMode }">
+         <header class="topbar header">
+       <div class="brand">Google Drive Asset Reviewer Tool</div>
+       <div class="user">
+         <span v-if="auth.username">Hi, {{ auth.username }}</span>
+         <button class="primary" @click="auth.logout(); $router.replace('/login')">Logout</button>
+       </div>
+     </header>
+     
      <div class="tabs">
        <button 
          class="tab-button" 
@@ -2893,6 +2901,38 @@ onMounted(() => {
     radial-gradient(circle at 90% 90%, rgba(59, 130, 246, 0.02) 0%, transparent 40%);
 }
 
+
+ /* Header & Navigation */
+.header { 
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  color: #fff; 
+  box-shadow: var(--shadow-md);
+  position: relative;
+  z-index: 10;
+}
+.topbar { 
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center;
+  padding: 1rem 1.5rem; 
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1); 
+}
+.brand { 
+  font-weight: 700; 
+  font-size: 1.25rem;
+  letter-spacing: -0.025em;
+}
+.user { 
+  display: flex; 
+  align-items: center; 
+  gap: 1rem;
+}
+.user button { 
+  padding: 0.5rem 1rem; 
+  border-radius: var(--radius-lg);
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
 
  .content { 
    padding: 2rem; 
