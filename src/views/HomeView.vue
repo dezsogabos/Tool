@@ -204,7 +204,7 @@ function handleSearch() {
     nextTick(() => {
       setTimeout(() => {
         scrollToReferenceImage()
-      }, 100)
+      }, 200) // Increased delay to ensure DOM is fully updated
     })
     
     // Schedule pre-fetching of next assets
@@ -271,7 +271,7 @@ function handleSearch() {
       nextTick(() => {
         setTimeout(() => {
           scrollToReferenceImage()
-        }, 100)
+        }, 200) // Increased delay to ensure DOM is fully updated
       })
       
       // Schedule pre-fetching of next assets
@@ -630,8 +630,14 @@ function goToNextAsset() {
 function scrollToReferenceImage() {
   console.log('scrollToReferenceImage called, referenceImageRef:', referenceImageRef.value)
   
-  // Use nextTick to ensure DOM is updated before trying to scroll
-  nextTick(() => {
+  // Only attempt to scroll if we have a reference file ID (meaning there should be a reference image)
+  if (!referenceFileId.value || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
+    console.log('No reference file ID, skipping scroll')
+    return
+  }
+  
+  // Helper function to attempt scrolling with retries
+  const attemptScroll = (attempt = 1, maxAttempts = 3) => {
     if (referenceImageRef.value) {
       referenceImageRef.value.scrollIntoView({ 
         behavior: 'smooth', 
@@ -639,23 +645,23 @@ function scrollToReferenceImage() {
         inline: 'nearest'
       })
       console.log('Scrolled to reference image')
+      return true
     } else {
-      console.log('referenceImageRef is null after nextTick, cannot scroll')
-      // Try again after a longer delay in case DOM is still updating
-      setTimeout(() => {
-        console.log('Retrying scroll, referenceImageRef:', referenceImageRef.value)
-        if (referenceImageRef.value) {
-          referenceImageRef.value.scrollIntoView({ 
-            behavior: 'smooth', 
-            block: 'start',
-            inline: 'nearest'
-          })
-          console.log('Scrolled to reference image on retry')
-        } else {
-          console.log('Still null on retry')
-        }
-      }, 300)
+      console.log(`referenceImageRef is null on attempt ${attempt}`)
+      if (attempt < maxAttempts) {
+        setTimeout(() => {
+          attemptScroll(attempt + 1, maxAttempts)
+        }, 200 * attempt) // Exponential backoff: 200ms, 400ms, 600ms
+      } else {
+        console.log('Max attempts reached, DOM element may not exist yet')
+      }
+      return false
     }
+  }
+  
+  // Use nextTick to ensure DOM is updated before trying to scroll
+  nextTick(() => {
+    attemptScroll()
   })
 }
 
@@ -729,9 +735,11 @@ function loadAssetImages(assetId) {
      ensureAllPredictedHaveFrames()
      
      // Auto-scroll to reference image with longer delay to ensure DOM is updated
-     setTimeout(() => {
-       scrollToReferenceImage()
-     }, 300)
+     nextTick(() => {
+       setTimeout(() => {
+         scrollToReferenceImage()
+       }, 300)
+     })
      
      // Schedule pre-fetching of next assets
      schedulePrefetch()
@@ -975,9 +983,11 @@ onMounted(() => {
     console.log(`🔍 referenceFileId === 'undefined': ${newValue === 'undefined'}`)
     console.log(`🔍 referenceFileId truthy check: ${!!newValue}`)
     
-    if (newValue && newValue !== oldValue) {
+    if (newValue && newValue !== oldValue && newValue !== 'null' && newValue !== 'undefined') {
       nextTick(() => {
-        scrollToReferenceImage()
+        setTimeout(() => {
+          scrollToReferenceImage()
+        }, 300) // Add delay to ensure DOM is fully updated
       })
     }
   })
