@@ -325,10 +325,10 @@ async function setAsset(assetId, data) {
   }
 }
 
-// Batch operations for improved performance using Turso SQLite
+// Simple asset operations - no batching needed for SQLite
 async function setAssetsBatch(assetsData) {
   try {
-    console.log(`🔍 Batch saving ${Object.keys(assetsData).length} assets to Turso`)
+    console.log(`🔍 Saving ${Object.keys(assetsData).length} assets to Turso`)
     
     const client = await getTursoClient()
     if (!client) {
@@ -339,42 +339,33 @@ async function setAssetsBatch(assetsData) {
     let failed = 0
     const errors = []
     
-    // Use a transaction for batch operations
-    await client.execute('BEGIN TRANSACTION')
-    
-    try {
-      for (const [assetId, data] of Object.entries(assetsData)) {
-        try {
-          await client.execute({
-            sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, updated_at) 
-                  VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
-            args: [assetId, data.predicted_asset_ids, data.matching_scores]
-          })
-          successful++
-        } catch (error) {
-          console.error(`❌ Failed to add asset ${assetId} to batch:`, error.message)
-          failed++
-          errors.push({ assetId, error: error.message })
-        }
+    for (const [assetId, data] of Object.entries(assetsData)) {
+      try {
+        await client.execute({
+          sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, updated_at) 
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+          args: [assetId, data.predicted_asset_ids, data.matching_scores]
+        })
+        successful++
+      } catch (error) {
+        console.error(`❌ Failed to save asset ${assetId}:`, error.message)
+        failed++
+        errors.push({ assetId, error: error.message })
       }
-      
-      await client.execute('COMMIT')
-      console.log(`✅ Batch save completed: ${successful} successful, ${failed} failed`)
-      return { successful, failed, errors }
-    } catch (error) {
-      await client.execute('ROLLBACK')
-      throw error
     }
+    
+    console.log(`✅ Save completed: ${successful} successful, ${failed} failed`)
+    return { successful, failed, errors }
   } catch (error) {
-    console.error('❌ Batch save failed:', error.message)
+    console.error('❌ Save failed:', error.message)
     throw error
   }
 }
 
-// Batch deletion for improved performance using Turso SQLite
+// Simple batch deletion - no transaction needed
 async function deleteAssetsBatch(assetIds) {
   try {
-    console.log(`🔍 Batch deleting ${assetIds.length} assets from Turso`)
+    console.log(`🔍 Deleting ${assetIds.length} assets from Turso`)
     
     const client = await getTursoClient()
     if (!client) {
@@ -385,33 +376,24 @@ async function deleteAssetsBatch(assetIds) {
     let failed = 0
     const errors = []
     
-    // Use a transaction for batch operations
-    await client.execute('BEGIN TRANSACTION')
-    
-    try {
-      for (const assetId of assetIds) {
-        try {
-          await client.execute({
-            sql: 'DELETE FROM assets WHERE asset_id = ?',
-            args: [assetId]
-          })
-          successful++
-        } catch (error) {
-          console.error(`❌ Failed to delete asset ${assetId} from batch:`, error.message)
-          failed++
-          errors.push({ assetId, error: error.message })
-        }
+    for (const assetId of assetIds) {
+      try {
+        await client.execute({
+          sql: 'DELETE FROM assets WHERE asset_id = ?',
+          args: [assetId]
+        })
+        successful++
+      } catch (error) {
+        console.error(`❌ Failed to delete asset ${assetId}:`, error.message)
+        failed++
+        errors.push({ assetId, error: error.message })
       }
-      
-      await client.execute('COMMIT')
-      console.log(`✅ Batch deletion completed: ${successful} successful, ${failed} failed`)
-      return { successful, failed, errors }
-    } catch (error) {
-      await client.execute('ROLLBACK')
-      throw error
     }
+    
+    console.log(`✅ Deletion completed: ${successful} successful, ${failed} failed`)
+    return { successful, failed, errors }
   } catch (error) {
-    console.error('❌ Batch deletion failed:', error.message)
+    console.error('❌ Deletion failed:', error.message)
     throw error
   }
 }
@@ -505,25 +487,24 @@ async function initializeDatabase() {
   console.log('Parsed', records.length, 'records from CSV')
   
   let imported = 0
-  const assetsToImport = {}
   
   for (const record of records) {
     const assetId = String(record.asset_id ?? '').trim()
     if (assetId) {
-      assetsToImport[assetId] = {
-        asset_id: assetId,
-        predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
-        matching_scores: String(record.matching_scores ?? '')
+      try {
+        await setAsset(assetId, {
+          asset_id: assetId,
+          predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
+          matching_scores: String(record.matching_scores ?? '')
+        })
+        imported++
+      } catch (error) {
+        console.error(`Failed to import asset ${assetId}:`, error.message)
       }
     }
   }
   
-  if (Object.keys(assetsToImport).length > 0) {
-    console.log(`Importing ${Object.keys(assetsToImport).length} assets in batch...`)
-    const batchResult = await setAssetsBatch(assetsToImport)
-    imported = batchResult.successful
-    console.log(`Batch import result: ${batchResult.successful} successful, ${batchResult.failed} failed`)
-  }
+  console.log(`Import result: ${imported} successful`)
   
   console.log(`✅ Imported ${imported} records from CSV to Turso`)
 }
@@ -1137,73 +1118,45 @@ app.post('/api/import-csv', async (req, res) => {
       let skipped = 0
       let errors = 0
       const errorDetails = []
-      const batchSize = parseInt(options.batchSize) || 1000
       
-      // Process records in batches
-      for (let i = 0; i < records.length; i += batchSize) {
-        const batch = records.slice(i, i + batchSize)
+      // Process records directly - no batching needed for SQLite
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i]
+        const lineNumber = i + 2 // +2 for header row and 0-based index
         
-        // Prepare batch data
-        const batchAssets = {}
-        const batchErrors = []
-        
-        for (let j = 0; j < batch.length; j++) {
-          const record = batch[j]
-          const lineNumber = i + j + 2 // +2 for header row and 0-based index
+        try {
+          const assetId = String(record.asset_id ?? '').trim()
+          const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+          const matchingScores = String(record.matching_scores ?? '')
           
-          try {
-            const assetId = String(record.asset_id ?? '').trim()
-            const predictedAssetIds = String(record.predicted_asset_ids ?? '')
-            const matchingScores = String(record.matching_scores ?? '')
-            
-            if (!assetId) {
+          if (!assetId) {
+            skipped++
+            continue
+          }
+          
+          // Check for duplicates if skipDuplicates is enabled
+          if (options.skipDuplicates) {
+            const existing = await getAsset(assetId)
+            if (existing) {
               skipped++
               continue
             }
-            
-            // Check for duplicates if skipDuplicates is enabled
-            if (options.skipDuplicates) {
-              const existing = await getAsset(assetId)
-              if (existing) {
-                skipped++
-                continue
-              }
-            }
-            
-            batchAssets[assetId] = {
-              asset_id: assetId,
-              predicted_asset_ids: predictedAssetIds,
-              matching_scores: matchingScores
-            }
+          }
           
-          } catch (error) {
-            errors++
-            batchErrors.push({
-              line: lineNumber,
-              message: error.message
-            })
-          }
-        }
-        
-        // Save batch to Redis
-        if (Object.keys(batchAssets).length > 0) {
-          try {
-            const batchResult = await setAssetsBatch(batchAssets)
-            imported += batchResult.successful
-            errors += batchResult.failed
-            
-            // Add any batch errors to error details
-            errorDetails.push(...batchErrors)
-            
-            console.log(`📊 Batch ${Math.floor(i / batchSize) + 1}: ${batchResult.successful} imported, ${batchResult.failed} failed`)
-          } catch (batchError) {
-            console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message)
-            errors += Object.keys(batchAssets).length
-            errorDetails.push({
-              line: i + 1,
-              message: `Batch failed: ${batchError.message}`
-            })
-          }
+          // Save directly to Turso
+          await setAsset(assetId, {
+            asset_id: assetId,
+            predicted_asset_ids: predictedAssetIds,
+            matching_scores: matchingScores
+          })
+          imported++
+          
+        } catch (error) {
+          errors++
+          errorDetails.push({
+            line: lineNumber,
+            message: error.message
+          })
         }
       }
       
@@ -1280,72 +1233,48 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
         const records = JSON.parse(result.rows[0].chunk_data)
         console.log(`Processing chunk ${chunkIndex + 1}/${totalChunks} with ${records.length} records`)
         
-        // Process records in smaller batches within the chunk
-        const batchSize = parseInt(options.batchSize) || 1000
+        // Process records directly - no batching needed for SQLite
         let chunkImported = 0
         let chunkSkipped = 0
         let chunkErrors = 0
         
-        for (let i = 0; i < records.length; i += batchSize) {
-          const batch = records.slice(i, i + batchSize)
+        for (let i = 0; i < records.length; i++) {
+          const record = records[i]
+          const lineNumber = (chunkIndex * chunkSize) + i + 2 // +2 for header row and 0-based index
           
-          // Prepare batch data
-          const batchAssets = {}
-          const batchErrors = []
-          
-          for (let j = 0; j < batch.length; j++) {
-            const record = batch[j]
-            const lineNumber = (chunkIndex * chunkSize) + i + j + 2 // +2 for header row and 0-based index
+          try {
+            const assetId = String(record.asset_id ?? '').trim()
+            const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+            const matchingScores = String(record.matching_scores ?? '')
             
-            try {
-              const assetId = String(record.asset_id ?? '').trim()
-              const predictedAssetIds = String(record.predicted_asset_ids ?? '')
-              const matchingScores = String(record.matching_scores ?? '')
-              
-              if (!assetId) {
+            if (!assetId) {
+              chunkSkipped++
+              continue
+            }
+            
+            // Check for duplicates if skipDuplicates is enabled
+            if (options.skipDuplicates) {
+              const existing = await getAsset(assetId)
+              if (existing) {
                 chunkSkipped++
                 continue
               }
-              
-              // Check for duplicates if skipDuplicates is enabled
-              if (options.skipDuplicates) {
-                const existing = await getAsset(assetId)
-                if (existing) {
-                  chunkSkipped++
-                  continue
-                }
-              }
-              
-              batchAssets[assetId] = {
-                asset_id: assetId,
-                predicted_asset_ids: predictedAssetIds,
-                matching_scores: matchingScores
-              }
+            }
             
-            } catch (error) {
-              chunkErrors++
-              batchErrors.push({
-                line: lineNumber,
-                message: error.message
-              })
-            }
-          }
-          
-          // Save batch to Turso
-          if (Object.keys(batchAssets).length > 0) {
-            try {
-              const batchResult = await setAssetsBatch(batchAssets)
-              chunkImported += batchResult.successful
-              chunkErrors += batchResult.failed
-              allErrorDetails.push(...batchErrors)
-            } catch (batchError) {
-              console.error(`❌ Batch failed in chunk ${chunkIndex}:`, batchError.message)
-              chunkErrors += Object.keys(batchAssets).length
-              allErrorDetails.push({
-                line: (chunkIndex * chunkSize) + i + 1,
-                message: `Batch failed: ${batchError.message}`
-              })
-            }
+            // Save directly to Turso
+            await setAsset(assetId, {
+              asset_id: assetId,
+              predicted_asset_ids: predictedAssetIds,
+              matching_scores: matchingScores
+            })
+            chunkImported++
+            
+          } catch (error) {
+            chunkErrors++
+            allErrorDetails.push({
+              line: lineNumber,
+              message: error.message
+            })
           }
         }
         
@@ -1758,76 +1687,47 @@ app.post('/api/import-database', async (req, res) => {
       sendProgress(40, 'Cleared existing data...')
     }
     
-    let imported = 0
-    let errors = 0
-    const errorDetails = []
-    const batchSize = parseInt(options.batchSize) || 1000
+         let imported = 0
+     let errors = 0
+     const errorDetails = []
     
-         // Process records in batches
-     for (let i = 0; i < records.length; i += batchSize) {
-       const batch = records.slice(i, i + batchSize)
+         // Process records directly - no batching needed for SQLite
+     for (let i = 0; i < records.length; i++) {
+       const record = records[i]
+       const lineNumber = i + 1
        const progress = 40 + Math.floor((i / records.length) * 50)
        
-       sendProgress(progress, `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)}...`)
+       sendProgress(progress, `Processing record ${i + 1}/${records.length}...`)
        
-       // Prepare batch data
-       const batchAssets = {}
-       const batchErrors = []
-       
-       for (let j = 0; j < batch.length; j++) {
-         const record = batch[j]
-         const lineNumber = i + j + 1
+       try {
+         const assetId = String(record.asset_id ?? '').trim()
+         const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+         const matchingScores = String(record.matching_scores ?? '')
          
-         try {
-           const assetId = String(record.asset_id ?? '').trim()
-           const predictedAssetIds = String(record.predicted_asset_ids ?? '')
-           const matchingScores = String(record.matching_scores ?? '')
-           
-           if (!assetId) {
-             errors++
-             batchErrors.push({
-               line: lineNumber,
-               message: 'Missing asset_id'
-             })
-             continue
-           }
-           
-           batchAssets[assetId] = {
-             asset_id: assetId,
-             predicted_asset_ids: predictedAssetIds,
-             matching_scores: matchingScores
-           }
-           
-         } catch (error) {
+         if (!assetId) {
            errors++
-           batchErrors.push({
+           errorDetails.push({
              line: lineNumber,
-             message: error.message
+             message: 'Missing asset_id'
            })
+           continue
          }
+         
+         // Save directly to Turso
+         await setAsset(assetId, {
+           asset_id: assetId,
+           predicted_asset_ids: predictedAssetIds,
+           matching_scores: matchingScores
+         })
+         imported++
+         
+       } catch (error) {
+         errors++
+         errorDetails.push({
+           line: lineNumber,
+           message: error.message
+         })
        }
-       
-               // Save batch to Turso
-        if (Object.keys(batchAssets).length > 0) {
-          try {
-            const batchResult = await setAssetsBatch(batchAssets)
-            imported += batchResult.successful
-            errors += batchResult.failed
-            
-            // Add any batch errors to error details
-            errorDetails.push(...batchErrors)
-            
-            // Debug: Log progress
-            console.log(`📊 Batch ${Math.floor(i / batchSize) + 1}: ${batchResult.successful} imported, ${batchResult.failed} failed`)
-          } catch (batchError) {
-            console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message)
-            errors += Object.keys(batchAssets).length
-            errorDetails.push({
-              line: i + 1,
-              message: `Batch failed: ${batchError.message}`
-            })
-          }
-        }
      }
     
     sendProgress(90, 'Finalizing import...')
