@@ -1650,6 +1650,33 @@ function clearAllCacheAndRefresh() {
   console.log('✅ All cache cleared - next navigation will use fresh API calls')
 }
 
+// Function to refresh the asset list (useful after import)
+async function refreshAssetList() {
+  console.log('🔄 Refreshing asset list...')
+  
+  // Clear all caches
+  clearAllCaches()
+  
+  // Reset current asset
+  assetId.value = ''
+  referenceFileId.value = ''
+  predicted.value = []
+  referenceDecision.value = ''
+  selectedPredictedIds.value = []
+  rejectedPredictedIds.value = []
+  
+  // Reset page data
+  page.value = 1
+  ids.value = []
+  totalAssets.value = 0
+  pageCount.value = 0
+  
+  // Reload page 1
+  await loadPage(1)
+  
+  console.log('✅ Asset list refreshed successfully')
+}
+
 // Debug function to check what's in the database for an asset
 async function debugAsset(assetId) {
   try {
@@ -2317,8 +2344,17 @@ async function refreshAssetReviewAfterImport() {
       rejectedPredictedIds.value = []
     }
     
+    // Force refresh by resetting to page 1 and clearing any cached data
+    page.value = 1
+    ids.value = []
+    totalAssets.value = 0
+    pageCount.value = 0
+    
+    // Add a small delay to ensure the database has been updated
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    
     // Reload the current page to get updated asset list
-    await loadPage(page.value)
+    await loadPage(1)
     
     // Show success message
     console.log('✅ Asset review refreshed successfully after import')
