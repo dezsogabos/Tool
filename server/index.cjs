@@ -265,6 +265,7 @@ function parseArrayField(value) {
 
 async function getFileIdByAssetId(assetId) {
   console.log(`🔍 getFileIdByAssetId called for assetId: ${assetId}`)
+  console.log(`🔍 ALL_DATASET_FOLDER_ID: ${ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET'}`)
   const drive = getDrive()
   if (!drive) {
     console.log(`❌ Google Drive not available for asset ${assetId}`)
@@ -280,6 +281,7 @@ async function getFileIdByAssetId(assetId) {
     console.log(`🔍 Found ${items.length} files for asset ${assetId}`)
     if (items.length > 0) {
       console.log(`🔍 File ID: ${items[0].id}, Name: ${items[0].name}`)
+      return items[0].id
     } else {
       console.log(`❌ No file found for asset ${assetId} with name ${fileName}`)
       // Try alternative file extensions
@@ -297,7 +299,7 @@ async function getFileIdByAssetId(assetId) {
       }
       console.log(`❌ No file found for asset ${assetId} with any common extension`)
     }
-    return items.length ? items[0].id : null
+    return null
   } catch (error) {
     console.error(`❌ Error getting file ID for asset ${assetId}:`, error.message)
     return null
@@ -408,6 +410,7 @@ app.get('/api/assets/:assetId', async (req, res) => {
     if (ALL_DATASET_FOLDER_ID) {
       try {
         console.log(`🔍 Attempting to get reference file ID for asset ${searchId}`)
+        console.log(`🔍 Using folder ID: ${ALL_DATASET_FOLDER_ID}`)
         referenceFileId = await getFileIdByAssetId(searchId)
         console.log(`🔍 Reference file ID result for ${searchId}: ${referenceFileId}`)
         
