@@ -301,6 +301,9 @@ function handleSearch() {
       // Ensure all predicted images have frames
       ensureAllPredictedHaveFrames()
       
+      // Set asset data received immediately after processing
+      assetDataReceived.value = true // Asset found via API
+      
       // Auto-scroll to reference image after DOM update
       nextTick(() => {
         setTimeout(() => {
@@ -310,7 +313,6 @@ function handleSearch() {
       
       // Schedule pre-fetching of next assets
       schedulePrefetch()
-      assetDataReceived.value = true // Asset found via API
     })
     .catch((e) => { 
       error.value = e.message || 'Search failed'
@@ -784,6 +786,9 @@ function loadAssetImages(assetId) {
      // Ensure all predicted images have frames
      ensureAllPredictedHaveFrames()
      
+     // Set asset data received immediately after processing
+     assetDataReceived.value = true // Asset found via API
+     
      // Auto-scroll to reference image with longer delay to ensure DOM is updated
      nextTick(() => {
        setTimeout(() => {
@@ -793,7 +798,6 @@ function loadAssetImages(assetId) {
      
      // Schedule pre-fetching of next assets
      schedulePrefetch()
-     assetDataReceived.value = true // Asset found via API
    })
     .catch((e) => { 
       error.value = e.message || 'Failed to load images'
