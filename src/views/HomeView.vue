@@ -1617,6 +1617,18 @@ function clearStaleCache() {
   }
 }
 
+// Function to force clear cache for any asset and refresh
+function forceRefreshAsset(assetId) {
+  console.log(`🔄 Force refreshing asset: ${assetId}`)
+  clearAssetCache(assetId)
+  
+  // If this is the current asset, refresh it
+  if (assetId.value.trim() === assetId) {
+    console.log(`🔄 Refreshing current asset: ${assetId}`)
+    handleSearch()
+  }
+}
+
 // Debug function to check what's in the database for an asset
 async function debugAsset(assetId) {
   try {
