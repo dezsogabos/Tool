@@ -36,6 +36,15 @@ const assetDataReceived = ref(false) // Track if asset data was successfully rec
 // Cache system for improved performance
 const assetCache = ref(new Map()) // Cache for asset data: { assetId: { reference, predicted, timestamp } }
 const imageUrlCache = ref(new Map()) // Cache for image URLs: { fileId: { url, timestamp } }
+
+// Backup and restore functionality
+const selectedBackupFile = ref(null)
+const isImporting = ref(false)
+const backupProgress = ref({
+  show: false,
+  percent: 0,
+  message: ''
+})
 const CACHE_DURATION = 5 * 60 * 1000 // 5 minutes cache duration
 const MAX_CACHE_SIZE = 100 // Maximum number of cached items
 
@@ -2375,7 +2384,122 @@ onMounted(() => {
   refreshDbStatus()
 })
 
+// Backup and restore functions
+async function exportDatabase() {
+  try {
+    console.log('Exporting database...')
+    const response = await fetch('/api/export-database')
+    
+    if (!response.ok) {
+      throw new Error(`Export failed: ${response.status}`)
+    }
+    
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `database-backup-${new Date().toISOString().split('T')[0]}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    
+    console.log('✅ Database exported successfully')
+  } catch (error) {
+    console.error('❌ Export failed:', error)
+    alert(`Export failed: ${error.message}`)
+  }
+}
 
+function handleBackupFileSelect(event) {
+  const file = event.target.files[0]
+  if (file && file.type === 'application/json') {
+    selectedBackupFile.value = file
+    console.log('Selected backup file:', file.name)
+  } else {
+    alert('Please select a valid JSON backup file')
+    event.target.value = ''
+  }
+}
+
+async function importDatabase() {
+  if (!selectedBackupFile.value) {
+    alert('Please select a backup file first')
+    return
+  }
+  
+  if (!confirm('This will replace all current database data. Are you sure you want to continue?')) {
+    return
+  }
+  
+  isImporting.value = true
+  backupProgress.value = { show: true, percent: 0, message: 'Preparing import...' }
+  
+  try {
+    const formData = new FormData()
+    formData.append('file', selectedBackupFile.value)
+    formData.append('options', JSON.stringify({ clearExisting: true }))
+    
+    const response = await fetch('/api/import-database', {
+      method: 'POST',
+      body: formData
+    })
+    
+    if (!response.ok) {
+      throw new Error(`Import failed: ${response.status}`)
+    }
+    
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      
+      const chunk = decoder.decode(value)
+      const lines = chunk.split('\n').filter(line => line.trim())
+      
+      for (const line of lines) {
+        try {
+          const data = JSON.parse(line)
+          if (data.type === 'progress') {
+            backupProgress.value = {
+              show: true,
+              percent: data.progress,
+              message: data.message
+            }
+          } else if (data.type === 'result') {
+            const result = data.result
+            console.log('Import result:', result)
+            
+            if (result.errors > 0) {
+              alert(`Import completed with ${result.errors} errors. Check console for details.`)
+            } else {
+              alert(`✅ Successfully imported ${result.imported} records!`)
+            }
+            
+            // Refresh the current page to show new data
+            loadPage(page.value)
+            break
+          }
+        } catch (parseError) {
+          console.warn('Failed to parse progress line:', parseError)
+        }
+      }
+    }
+    
+  } catch (error) {
+    console.error('❌ Import failed:', error)
+    alert(`Import failed: ${error.message}`)
+  } finally {
+    isImporting.value = false
+    backupProgress.value = { show: false, percent: 0, message: '' }
+    selectedBackupFile.value = null
+    if (document.querySelector('input[type="file"]')) {
+      document.querySelector('input[type="file"]').value = ''
+    }
+  }
+}
 
 </script>
 
@@ -2424,6 +2548,13 @@ onMounted(() => {
            @click="activeTab = 'analytics'"
          >
            Analytics
+         </button>
+         <button 
+           class="tab-button" 
+           :class="{ active: activeTab === 'backup' }"
+           @click="activeTab = 'backup'"
+         >
+           Backup & Restore
          </button>
          <button 
            class="tab-button" 
@@ -3219,6 +3350,85 @@ onMounted(() => {
                  <span class="button-icon">🧹</span>
                  Clear All Caches
                </button>
+             </div>
+           </div>
+         </div>
+
+         <!-- Backup & Restore Tab Content -->
+         <div v-if="activeTab === 'backup'" class="backup-content">
+           <div class="backup-section">
+             <div class="hero-section">
+               <div class="hero-icon">
+                 <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                   <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" fill="currentColor"/>
+                 </svg>
+               </div>
+               <h1 class="hero-title">Backup & Restore</h1>
+               <p class="hero-subtitle">Protect your data by creating backups and restore when needed. Never lose your progress again!</p>
+             </div>
+             
+             <div class="backup-actions">
+               <div class="backup-card">
+                 <div class="backup-icon">
+                   <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                     <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" fill="currentColor"/>
+                   </svg>
+                 </div>
+                 <h3>📤 Export Database</h3>
+                 <p>Download a backup of all your imported data</p>
+                 <button @click="exportDatabase" class="backup-btn export">
+                   Export Database
+                 </button>
+               </div>
+               
+               <div class="backup-card">
+                 <div class="backup-icon">
+                   <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                     <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor"/>
+                   </svg>
+                 </div>
+                 <h3>📥 Restore Database</h3>
+                 <p>Upload a backup file to restore your data</p>
+                 <input 
+                   type="file" 
+                   ref="backupFileInput" 
+                   @change="handleBackupFileSelect" 
+                   accept=".json"
+                   style="display: none"
+                 />
+                 <button @click="$refs.backupFileInput.click()" class="backup-btn import">
+                   Choose Backup File
+                 </button>
+                 <div v-if="selectedBackupFile" class="selected-file">
+                   Selected: {{ selectedBackupFile.name }}
+                 </div>
+                 <button 
+                   v-if="selectedBackupFile" 
+                   @click="importDatabase" 
+                   class="backup-btn restore"
+                   :disabled="isImporting"
+                 >
+                   {{ isImporting ? 'Restoring...' : 'Restore Database' }}
+                 </button>
+               </div>
+             </div>
+             
+             <div class="backup-info">
+               <h3>💡 Backup Tips</h3>
+               <ul>
+                 <li>Create regular backups before major changes</li>
+                 <li>Store backups in a safe location</li>
+                 <li>Backup files contain all your imported CSV data</li>
+                 <li>Review progress is saved in your browser</li>
+                 <li>Backup files are in JSON format for easy sharing</li>
+               </ul>
+             </div>
+             
+             <div v-if="backupProgress.show" class="backup-progress">
+               <div class="progress-bar">
+                 <div class="progress-fill" :style="{ width: backupProgress.percent + '%' }"></div>
+               </div>
+               <p>{{ backupProgress.message }}</p>
              </div>
            </div>
          </div>
@@ -6649,6 +6859,182 @@ input#assetId::placeholder {
   background: var(--color-bg-dark);
   color: var(--color-text-dark);
   border-color: var(--color-border-dark);
+}
+
+/* Backup Content Styles */
+.backup-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+.backup-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 2rem;
+  margin: 2rem 0;
+}
+
+.backup-card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 2rem;
+  text-align: center;
+  transition: all 0.3s ease;
+}
+
+.backup-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--color-primary);
+}
+
+.backup-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  border-radius: 1rem;
+  margin-bottom: 1rem;
+  color: white;
+}
+
+.backup-card h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0 0 0.5rem 0;
+}
+
+.backup-card p {
+  color: var(--color-text-secondary);
+  margin: 0 0 1.5rem 0;
+  line-height: 1.5;
+}
+
+.backup-btn {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin: 0.25rem;
+}
+
+.backup-btn.export {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+}
+
+.backup-btn.export:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(16, 185, 129, 0.3);
+}
+
+.backup-btn.import {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: white;
+}
+
+.backup-btn.import:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(59, 130, 246, 0.3);
+}
+
+.backup-btn.restore {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: white;
+}
+
+.backup-btn.restore:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(245, 158, 11, 0.3);
+}
+
+.backup-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.selected-file {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  margin: 1rem 0;
+  font-size: 0.875rem;
+  color: var(--color-text);
+}
+
+.backup-info {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  margin: 2rem 0;
+}
+
+.backup-info h3 {
+  color: var(--color-text);
+  margin: 0 0 1rem 0;
+  font-size: 1.125rem;
+}
+
+.backup-info ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.backup-info li {
+  padding: 0.5rem 0;
+  color: var(--color-text-secondary);
+  position: relative;
+  padding-left: 1.5rem;
+}
+
+.backup-info li::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: var(--color-primary);
+  font-weight: bold;
+}
+
+.backup-progress {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  margin: 2rem 0;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--color-border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-2) 100%);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.backup-progress p {
+  color: var(--color-text);
+  margin: 0;
+  font-weight: 500;
 }
 </style>
 

@@ -163,22 +163,73 @@ function loadDataset() {
   dataset = records
 }
 
-// Note: Using file-based database for persistence across serverless invocations
+// Enhanced persistence system for serverless environments
+// Supports multiple backends: file-based, environment variables, and external storage
 
-// SQLite database setup
+// SQLite database setup with enhanced persistence
 let dbInstance = null
 function getDb() {
   if (!dbInstance) {
-    // Use file-based database for both local and production
-    // This ensures data persists across serverless function invocations
-    const DB_PATH = process.env.NODE_ENV === 'production' 
-      ? '/tmp/data.db'  // Use /tmp for Vercel serverless
-      : path.resolve(__dirname, 'data.db')
+    let DB_PATH
     
-    console.log(`Using file-based database: ${DB_PATH}`)
+    if (process.env.NODE_ENV === 'production') {
+      // In production, try multiple persistence strategies
+      if (process.env.DATABASE_PATH) {
+        // Use custom database path if provided
+        DB_PATH = process.env.DATABASE_PATH
+        console.log(`Using custom database path: ${DB_PATH}`)
+      } else if (process.env.VERCEL_ENV === 'production') {
+        // In Vercel production, use /tmp but with backup strategy
+        DB_PATH = '/tmp/data.db'
+        console.log(`Using Vercel /tmp database: ${DB_PATH}`)
+      } else {
+        // Fallback to /tmp
+        DB_PATH = '/tmp/data.db'
+        console.log(`Using fallback /tmp database: ${DB_PATH}`)
+      }
+    } else {
+      // Local development - use file-based database
+      DB_PATH = path.resolve(__dirname, 'data.db')
+      console.log(`Using local database: ${DB_PATH}`)
+    }
+    
     dbInstance = new Database(DB_PATH)
+    
+    // Initialize database with backup data if empty
+    initializeDatabaseWithBackup()
   }
   return dbInstance
+}
+
+// Function to initialize database with backup data from environment
+function initializeDatabaseWithBackup() {
+  try {
+    const db = getDb()
+    const row = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
+    
+    // If database is empty and we have backup data in environment
+    if (row && row.cnt === 0 && process.env.BACKUP_CSV_DATA) {
+      console.log('Database is empty, attempting to restore from backup data...')
+      
+      try {
+        const backupData = JSON.parse(process.env.BACKUP_CSV_DATA)
+        if (Array.isArray(backupData) && backupData.length > 0) {
+          const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
+          const insertMany = db.transaction((rows) => {
+            for (const r of rows) {
+              insert.run(String(r.asset_id ?? '').trim(), String(r.predicted_asset_ids ?? ''), String(r.matching_scores ?? ''))
+            }
+          })
+          insertMany(backupData)
+          console.log(`✅ Restored ${backupData.length} records from backup data`)
+        }
+      } catch (backupError) {
+        console.warn('Failed to restore from backup data:', backupError.message)
+      }
+    }
+  } catch (error) {
+    console.warn('Error initializing database with backup:', error.message)
+  }
 }
 
 function ensureTables() {
@@ -1008,6 +1059,180 @@ app.get('/api/debug/cache', (req, res) => {
     res.status(500).json({
       error: error.message
     })
+  }
+})
+
+// Export database data for backup
+app.get('/api/export-database', (req, res) => {
+  try {
+    console.log('Database export requested')
+    initializeDatabaseIfNeeded()
+    const db = getDb()
+    
+    const rows = db.prepare('SELECT asset_id, predicted_asset_ids, matching_scores FROM assets').all()
+    
+    const exportData = {
+      timestamp: new Date().toISOString(),
+      totalRecords: rows.length,
+      data: rows
+    }
+    
+    res.setHeader('Content-Type', 'application/json')
+    res.setHeader('Content-Disposition', `attachment; filename="database-backup-${new Date().toISOString().split('T')[0]}.json"`)
+    res.json(exportData)
+    
+    console.log(`✅ Exported ${rows.length} records from database`)
+  } catch (error) {
+    console.error('Database export error:', error)
+    res.status(500).json({
+      error: error.message
+    })
+  }
+})
+
+// Import database data from backup
+app.post('/api/import-database', async (req, res) => {
+  try {
+    console.log('Database import request received')
+    
+    // Set headers for streaming response
+    res.setHeader('Content-Type', 'text/plain')
+    res.setHeader('Transfer-Encoding', 'chunked')
+    
+    const sendProgress = (progress, message) => {
+      const data = JSON.stringify({ type: 'progress', progress, message }) + '\n'
+      res.write(data)
+    }
+    
+    const sendResult = (result) => {
+      const data = JSON.stringify({ type: 'result', result }) + '\n'
+      res.write(data)
+      res.end()
+    }
+    
+    // Check if file was uploaded
+    if (!req.files || !req.files.file) {
+      sendResult({
+        totalRecords: 0,
+        imported: 0,
+        errors: 1,
+        errorDetails: [{ line: 0, message: 'No backup file uploaded' }]
+      })
+      return
+    }
+    
+    const file = req.files.file
+    const options = req.body.options ? JSON.parse(req.body.options) : {}
+    
+    console.log('Processing backup file:', file.name, 'Size:', file.size)
+    sendProgress(10, 'Reading backup file...')
+    
+    // Parse backup file
+    const content = file.data.toString('utf-8')
+    const backupData = JSON.parse(content)
+    
+    if (!backupData.data || !Array.isArray(backupData.data)) {
+      sendResult({
+        totalRecords: 0,
+        imported: 0,
+        errors: 1,
+        errorDetails: [{ line: 0, message: 'Invalid backup file format' }]
+      })
+      return
+    }
+    
+    const records = backupData.data
+    console.log('Parsed', records.length, 'records from backup')
+    sendProgress(30, `Parsed ${records.length} records, preparing database...`)
+    
+    // Initialize database
+    initializeDatabaseIfNeeded()
+    const db = getDb()
+    
+    // Clear existing data if requested
+    if (options.clearExisting) {
+      console.log('Clearing existing data...')
+      db.prepare('DELETE FROM assets').run()
+      sendProgress(40, 'Cleared existing data...')
+    }
+    
+    // Prepare insert statement
+    const insert = db.prepare('INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores) VALUES (?, ?, ?)')
+    
+    let imported = 0
+    let errors = 0
+    const errorDetails = []
+    const batchSize = parseInt(options.batchSize) || 1000
+    
+    // Process records in batches
+    for (let i = 0; i < records.length; i += batchSize) {
+      const batch = records.slice(i, i + batchSize)
+      const progress = 40 + Math.floor((i / records.length) * 50)
+      
+      sendProgress(progress, `Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)}...`)
+      
+      // Process batch
+      for (let j = 0; j < batch.length; j++) {
+        const record = batch[j]
+        const lineNumber = i + j + 1
+        
+        try {
+          const assetId = String(record.asset_id ?? '').trim()
+          const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+          const matchingScores = String(record.matching_scores ?? '')
+          
+          if (!assetId) {
+            errors++
+            errorDetails.push({
+              line: lineNumber,
+              message: 'Missing asset_id'
+            })
+            continue
+          }
+          
+          insert.run(assetId, predictedAssetIds, matchingScores)
+          imported++
+          
+        } catch (error) {
+          errors++
+          errorDetails.push({
+            line: lineNumber,
+            message: error.message
+          })
+        }
+      }
+    }
+    
+    sendProgress(90, 'Finalizing import...')
+    
+    const result = {
+      totalRecords: records.length,
+      imported,
+      errors,
+      errorDetails
+    }
+    
+    console.log('Database import completed:', result)
+    sendProgress(100, 'Database import completed successfully!')
+    sendResult(result)
+    
+  } catch (error) {
+    console.error('Database import error:', error)
+    const errorResult = {
+      totalRecords: 0,
+      imported: 0,
+      errors: 1,
+      errorDetails: [{ line: 0, message: error.message }]
+    }
+    
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'application/json')
+      res.status(500).json(errorResult)
+    } else {
+      const data = JSON.stringify({ type: 'result', result: errorResult }) + '\n'
+      res.write(data)
+      res.end()
+    }
   }
 })
 
