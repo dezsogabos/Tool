@@ -183,30 +183,14 @@ function handleSearch() {
   
   // Check cache first
   const cachedData = getCachedAsset(currentAssetId)
-  if (cachedData) {
+  if (cachedData && cachedData.reference && cachedData.reference.fileId) {
     console.log(`🚀 Using cached data for asset: ${currentAssetId}`)
     console.log(`🔍 Cached data:`, cachedData)
     console.log(`🔍 Cached data.reference:`, cachedData.reference)
     console.log(`🔍 Cached data.reference?.fileId:`, cachedData.reference?.fileId)
     
-    // Handle case where reference might be null or undefined
-    if (cachedData.reference && cachedData.reference.fileId) {
-      referenceFileId.value = cachedData.reference.fileId
-      console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
-    } else {
-      referenceFileId.value = ''
-      console.log(`🔍 No reference file ID in cached data, set to empty string`)
-      
-      // Clear the cache for this asset so it can be re-fetched from API
-      console.log(`🧹 Clearing cache for asset ${currentAssetId} due to missing reference data`)
-      assetCache.value.delete(currentAssetId)
-      prefetchedAssets.value.delete(currentAssetId)
-      
-      // Continue to API fetch instead of using cached data
-      console.log(`🔄 Falling back to API fetch for asset ${currentAssetId}`)
-      return
-    }
-    
+    referenceFileId.value = cachedData.reference.fileId
+    console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
     predicted.value = Array.isArray(cachedData.predicted) ? cachedData.predicted : []
     
     // Load existing review status if asset was previously reviewed
@@ -239,9 +223,22 @@ function handleSearch() {
     // Schedule pre-fetching of next assets
     schedulePrefetch()
     return
+  } else if (cachedData) {
+    // Cached data exists but has no valid reference
+    console.log(`🔍 Cached data exists but has no valid reference for asset: ${currentAssetId}`)
+    console.log(`🔍 Cached data:`, cachedData)
+    
+    // Clear the cache for this asset so it can be re-fetched from API
+    console.log(`🧹 Clearing cache for asset ${currentAssetId} due to missing reference data`)
+    assetCache.value.delete(currentAssetId)
+    prefetchedAssets.value.delete(currentAssetId)
+    
+    // Continue to API fetch instead of using cached data
+    console.log(`🔄 Falling back to API fetch for asset ${currentAssetId}`)
   }
   
   // If not in cache, fetch from API
+  console.log(`🌐 Starting API fetch for asset: ${currentAssetId}`)
   loading.value = true
   fetch(`/api/assets/${encodeURIComponent(currentAssetId)}`)
     .then(async (r) => {
