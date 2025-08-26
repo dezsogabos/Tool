@@ -164,7 +164,32 @@ function loadDataset() {
 }
 
 // Global cache for production (Vercel serverless)
+// Note: This gets reset on each serverless invocation, so we need to reload from database
 let globalAssetCache = new Map()
+let cacheInitialized = false
+
+// Function to initialize cache from database
+function initializeCacheFromDatabase() {
+  if (cacheInitialized) return
+  
+  try {
+    console.log('🔄 Initializing global cache from database...')
+    initializeDatabaseIfNeeded()
+    const db = getDb()
+    
+    const rows = db.prepare('SELECT asset_id, predicted_asset_ids, matching_scores FROM assets').all()
+    console.log(`📦 Loading ${rows.length} assets into global cache...`)
+    
+    for (const row of rows) {
+      globalAssetCache.set(row.asset_id, row)
+    }
+    
+    cacheInitialized = true
+    console.log(`✅ Global cache initialized with ${globalAssetCache.size} assets`)
+  } catch (error) {
+    console.error('❌ Error initializing cache from database:', error)
+  }
+}
 
 // SQLite database setup
 let dbInstance = null
@@ -438,8 +463,9 @@ app.get('/api/assets/:assetId', async (req, res) => {
 
     let row = null
     
-    // In production, check global cache first
+    // In production, initialize cache from database first
     if (process.env.NODE_ENV === 'production') {
+      initializeCacheFromDatabase()
       row = globalAssetCache.get(searchId)
       if (row) {
         console.log(`🔍 Asset ${searchId} found in global cache`)
@@ -641,6 +667,9 @@ app.get('/api/assets-page', (req, res) => {
     
     // In production, use global cache
     if (process.env.NODE_ENV === 'production') {
+      // Initialize cache from database first
+      initializeCacheFromDatabase()
+      
       total = globalAssetCache.size
       const allIds = Array.from(globalAssetCache.keys()).sort((a, b) => {
         const aNum = parseInt(a) || 0
@@ -942,6 +971,9 @@ app.get('/api/debug/assets', (req, res) => {
     
     // In production, use global cache
     if (process.env.NODE_ENV === 'production') {
+      // Initialize cache from database first
+      initializeCacheFromDatabase()
+      
       totalCount = globalAssetCache.size
       assetIds = Array.from(globalAssetCache.keys()).sort((a, b) => {
         const aNum = parseInt(a) || 0
@@ -1041,6 +1073,9 @@ app.get('/api/test-asset/:assetId', async (req, res) => {
 app.get('/api/debug/cache', (req, res) => {
   try {
     if (process.env.NODE_ENV === 'production') {
+      // Initialize cache from database first
+      initializeCacheFromDatabase()
+      
       const cacheSize = globalAssetCache.size
       const cacheKeys = Array.from(globalAssetCache.keys()).sort((a, b) => {
         const aNum = parseInt(a) || 0
