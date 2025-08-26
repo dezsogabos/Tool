@@ -1814,7 +1814,7 @@ const referenceImageUrl = computed(() => {
   const cached = imageUrlCache.value.get(cacheKey)
   if (cached) {
     console.log(`🖼️ Cache HIT for image: ${referenceFileId.value} (key: ${cacheKey})`)
-    return cached
+    return cached.url
   }
   
   // Generate URL without calling getImageUrl to prevent infinite loop
@@ -1841,7 +1841,7 @@ const predictedImageUrls = computed(() => {
     const cached = imageUrlCache.value.get(cacheKey)
     if (cached) {
       console.log(`🖼️ Cache HIT for image: ${p.fileId} (key: ${cacheKey})`)
-      return { id: p.id, fileId: p.fileId, url: cached }
+      return { id: p.id, fileId: p.fileId, url: cached.url }
     }
     
     // Generate URL without calling getImageUrl to prevent infinite loop
@@ -1865,7 +1865,7 @@ const previewImageUrl = computed(() => {
   const cached = imageUrlCache.value.get(cacheKey)
   if (cached) {
     console.log(`🖼️ Cache HIT for image: ${previewImage.value.fileId} (key: ${cacheKey})`)
-    return cached
+    return cached.url
   }
   
   // Generate URL without calling getImageUrl to prevent infinite loop
