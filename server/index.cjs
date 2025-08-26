@@ -261,6 +261,35 @@ async function setAssetsBatch(assetsData) {
   }
 }
 
+// Batch deletion for improved performance
+async function deleteAssetsBatch(assetIds) {
+  try {
+    console.log(`🔍 Batch deleting ${assetIds.length} assets from Blob Store`)
+    
+    const promises = []
+    for (const assetId of assetIds) {
+      const key = `assets/${assetId}.json`
+      
+      promises.push(
+        del(key).catch(error => {
+          console.error(`❌ Failed to delete asset ${assetId} in batch:`, error.message)
+          return { assetId, error: error.message }
+        })
+      )
+    }
+    
+    const results = await Promise.allSettled(promises)
+    const successful = results.filter(r => r.status === 'fulfilled').length
+    const failed = results.filter(r => r.status === 'rejected').length
+    
+    console.log(`✅ Batch deletion completed: ${successful} successful, ${failed} failed`)
+    return { successful, failed, results }
+  } catch (error) {
+    console.error('❌ Batch deletion failed:', error.message)
+    throw error
+  }
+}
+
 async function getAllAssets() {
   try {
     console.log('🔍 getAllAssets called - listing from Blob Store')
@@ -303,12 +332,21 @@ async function deleteAllAssets() {
     const { blobs } = await list({ prefix: 'assets/' })
     console.log(`🔍 Found ${blobs.length} assets to delete from Blob Store`)
     
-    for (const blob of blobs) {
-      if (blob.pathname.endsWith('.json')) {
-        await del(blob.url)
-        console.log(`🗑️ Deleted ${blob.pathname} from Blob Store`)
-      }
+    if (blobs.length === 0) {
+      console.log('✅ No assets to delete')
+      return
     }
+    
+    // Extract asset IDs from blob paths
+    const assetIds = blobs
+      .filter(blob => blob.pathname.endsWith('.json'))
+      .map(blob => blob.pathname.replace('assets/', '').replace('.json', ''))
+    
+    console.log(`🔍 Extracted ${assetIds.length} asset IDs for batch deletion`)
+    
+    // Use batch deletion for better performance
+    const batchResult = await deleteAssetsBatch(assetIds)
+    console.log(`✅ Batch deletion result: ${batchResult.successful} successful, ${batchResult.failed} failed`)
     
     console.log(`✅ Cleared all assets from Blob Store`)
   } catch (error) {
@@ -1098,12 +1136,12 @@ app.get('/api/test-asset-storage', async (_req, res) => {
     const count = await getAssetCount()
     console.log('🧪 Total asset count:', count)
     
-         // Clean up
-     try {
-       await del(`assets/${testAssetId}.json`)
-     } catch (error) {
-       console.warn('Failed to clean up test asset:', error.message)
-     }
+    // Clean up
+    try {
+      await del(`assets/${testAssetId}.json`)
+    } catch (error) {
+      console.warn('Failed to clean up test asset:', error.message)
+    }
     
     res.json({
       ok: true,
@@ -1116,6 +1154,46 @@ app.get('/api/test-asset-storage', async (_req, res) => {
       ok: false,
       error: error.message,
       message: 'Asset storage test failed'
+    })
+  }
+})
+
+// Batch delete specific assets
+app.post('/api/delete-assets-batch', async (req, res) => {
+  try {
+    console.log('Batch delete request received')
+    
+    const { assetIds } = req.body
+    
+    if (!assetIds || !Array.isArray(assetIds)) {
+      return res.status(400).json({
+        error: 'assetIds array is required'
+      })
+    }
+    
+    if (assetIds.length === 0) {
+      return res.json({
+        message: 'No assets to delete',
+        deleted: 0,
+        failed: 0
+      })
+    }
+    
+    console.log(`🔍 Batch deleting ${assetIds.length} assets`)
+    
+    const batchResult = await deleteAssetsBatch(assetIds)
+    
+    res.json({
+      message: 'Batch deletion completed',
+      total: assetIds.length,
+      deleted: batchResult.successful,
+      failed: batchResult.failed,
+      results: batchResult.results
+    })
+  } catch (error) {
+    console.error('Batch delete error:', error)
+    res.status(500).json({
+      error: error.message
     })
   }
 })
