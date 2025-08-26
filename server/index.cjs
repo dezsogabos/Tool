@@ -372,7 +372,14 @@ app.get('/api/assets/:assetId', async (req, res) => {
     initializeDatabaseIfNeeded()
     const db = getDb()
     const row = db.prepare('SELECT asset_id, predicted_asset_ids, matching_scores FROM assets WHERE asset_id = ? LIMIT 1').get(searchId)
-    if (!row) return res.json({ assetId: searchId, matches: [] })
+    if (!row) {
+      console.log(`🔍 Asset ${searchId} not found in database`)
+      return res.json({ 
+        assetId: searchId, 
+        reference: { fileId: null },
+        predicted: []
+      })
+    }
     const predictedIds = parseArrayField(row.predicted_asset_ids).map(String)
     const predictedScores = parseArrayField(row.matching_scores).map(s => Number(s))
 
