@@ -113,11 +113,19 @@ function getCachedAsset(assetId) {
 
 function setCachedAsset(assetId, data) {
   cleanupCache(assetCache.value)
+  
+  // Ensure we have valid data structure before caching
+  const cacheData = {
+    reference: data?.reference || null,
+    predicted: Array.isArray(data?.predicted) ? data.predicted : [],
+    timestamp: Date.now()
+  }
+  
   assetCache.value.set(assetId, {
-    data: data,
+    data: cacheData,
     timestamp: Date.now()
   })
-  console.log(`📦 Cached asset: ${assetId}`)
+  console.log(`📦 Cached asset: ${assetId}`, cacheData)
 }
 
 function getCachedImageUrl(fileId) {
@@ -180,8 +188,25 @@ function handleSearch() {
     console.log(`🔍 Cached data:`, cachedData)
     console.log(`🔍 Cached data.reference:`, cachedData.reference)
     console.log(`🔍 Cached data.reference?.fileId:`, cachedData.reference?.fileId)
-    referenceFileId.value = cachedData.reference?.fileId || ''
-    console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
+    
+    // Handle case where reference might be null or undefined
+    if (cachedData.reference && cachedData.reference.fileId) {
+      referenceFileId.value = cachedData.reference.fileId
+      console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
+    } else {
+      referenceFileId.value = ''
+      console.log(`🔍 No reference file ID in cached data, set to empty string`)
+      
+      // Clear the cache for this asset so it can be re-fetched from API
+      console.log(`🧹 Clearing cache for asset ${currentAssetId} due to missing reference data`)
+      assetCache.value.delete(currentAssetId)
+      prefetchedAssets.value.delete(currentAssetId)
+      
+      // Continue to API fetch instead of using cached data
+      console.log(`🔄 Falling back to API fetch for asset ${currentAssetId}`)
+      return
+    }
+    
     predicted.value = Array.isArray(cachedData.predicted) ? cachedData.predicted : []
     
     // Load existing review status if asset was previously reviewed
