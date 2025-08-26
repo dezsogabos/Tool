@@ -74,6 +74,13 @@ input, select, textarea {
   padding: 2rem;
 }
 
+/* Remove padding for login page to eliminate white space */
+#app .login-page {
+  padding: 0;
+  margin: 0;
+  max-width: none;
+}
+
 .topbar {
   background-color: var(--color-primary);
   color: #ffffff;

@@ -139,13 +139,15 @@ function handleKeyPress(event) {
 
 <style scoped>
 .login-page {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   position: relative;
   overflow: hidden;
+  margin: 0;
+  padding: 0;
 }
 
 .login-background {
@@ -211,7 +213,7 @@ function handleKeyPress(event) {
   background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(20px);
   border-radius: 24px;
-  padding: 48px 40px;
+  padding: 32px 32px;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   animation: slideUp 0.6s ease-out;
@@ -230,7 +232,7 @@ function handleKeyPress(event) {
 
 .login-header {
   text-align: center;
-  margin-bottom: 40px;
+  margin-bottom: 24px;
 }
 
 .logo {
@@ -261,11 +263,11 @@ function handleKeyPress(event) {
 }
 
 .login-form {
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
 .field {
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
 .field label {
@@ -396,7 +398,7 @@ function handleKeyPress(event) {
 
 .login-footer {
   text-align: center;
-  padding-top: 24px;
+  padding-top: 16px;
   border-top: 1px solid #e5e7eb;
 }
 
