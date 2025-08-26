@@ -6,7 +6,7 @@ const dotenv = require('dotenv')
 const { parse } = require('csv-parse/sync')
 const fileUpload = require('express-fileupload')
 const { createClient } = require('@vercel/edge-config')
-const { put, del, list, head } = require('@vercel/blob')
+const redis = require('redis')
 
 // Load env (if present)
 dotenv.config()
@@ -164,7 +164,7 @@ function loadDataset() {
   dataset = records
 }
 
-// Vercel Blob Store for persistent data storage
+// Redis client for persistent data storage
 // This ensures data persists between serverless function invocations and sessions
 
 // Edge Config client setup (for configuration only, not data storage)
@@ -182,101 +182,104 @@ function getEdgeConfig() {
   return edgeConfigClient
 }
 
-// Asset storage functions using Vercel Blob Store - Single JSON file approach
+// Redis client setup
+let redisClient = null
+async function getRedisClient() {
+  if (!redisClient) {
+    try {
+      const url = process.env.REDIS_URL || 'redis://localhost:6379'
+      redisClient = redis.createClient({
+        url: url,
+        socket: {
+          connectTimeout: 10000,
+          lazyConnect: true
+        }
+      })
+      
+      redisClient.on('error', (err) => {
+        console.error('Redis Client Error:', err)
+      })
+      
+      redisClient.on('connect', () => {
+        console.log('✅ Redis client connected')
+      })
+      
+      await redisClient.connect()
+      console.log('✅ Redis client initialized')
+    } catch (error) {
+      console.error('❌ Failed to initialize Redis client:', error.message)
+      redisClient = null
+    }
+  }
+  return redisClient
+}
+
+// Asset storage functions using Redis
 async function getAsset(assetId) {
   try {
-    console.log(`🔍 Getting asset ${assetId} from Blob Store`)
+    console.log(`🔍 Getting asset ${assetId} from Redis`)
     
-    const blob = await head('assets/database.json')
-    if (!blob) {
-      console.log(`🔍 Database file not found in Blob Store`)
+    const client = await getRedisClient()
+    if (!client) {
+      console.log(`🔍 Redis client not available`)
       return null
     }
     
-    // Fetch the actual JSON data from the blob
-    const response = await fetch(blob.url)
-    if (!response.ok) {
-      console.log(`🔍 Failed to fetch database from Blob Store`)
-      return null
-    }
-    
-    const database = await response.json()
-    const data = database[assetId]
+    const data = await client.get(`asset:${assetId}`)
     
     if (data) {
-      console.log(`🔍 Asset ${assetId} retrieved from Blob Store`)
-      return data
+      const parsedData = JSON.parse(data)
+      console.log(`🔍 Asset ${assetId} retrieved from Redis`)
+      return parsedData
     } else {
-      console.log(`🔍 Asset ${assetId} not found in database`)
+      console.log(`🔍 Asset ${assetId} not found in Redis`)
       return null
     }
   } catch (error) {
-    console.warn(`Failed to get asset ${assetId} from Blob Store:`, error.message)
+    console.warn(`Failed to get asset ${assetId} from Redis:`, error.message)
     return null
   }
 }
 
 async function setAsset(assetId, data) {
   try {
-    console.log(`🔍 setAsset called for ${assetId} - updating database in Blob Store`)
+    console.log(`🔍 setAsset called for ${assetId} - saving to Redis`)
     
-    // Get existing database
-    let database = {}
-    try {
-      const blob = await head('assets/database.json')
-      if (blob) {
-        const response = await fetch(blob.url)
-        if (response.ok) {
-          database = await response.json()
-        }
-      }
-    } catch (error) {
-      console.log('No existing database found, creating new one')
+    const client = await getRedisClient()
+    if (!client) {
+      throw new Error('Redis client not available')
     }
     
-    // Update the database
-    database[assetId] = data
+    // Save the asset data as JSON string
+    await client.set(`asset:${assetId}`, JSON.stringify(data))
     
-    // Save the updated database
-    await put('assets/database.json', JSON.stringify(database), {
-      access: 'public',
-      addRandomSuffix: false
-    })
-    
-    console.log(`✅ Asset ${assetId} saved to database`)
+    console.log(`✅ Asset ${assetId} saved to Redis`)
   } catch (error) {
-    console.error(`❌ Failed to save asset ${assetId} to database:`, error.message)
+    console.error(`❌ Failed to save asset ${assetId} to Redis:`, error.message)
     throw error
   }
 }
 
-// Batch operations for improved performance - Single JSON file approach
+// Batch operations for improved performance using Redis
 async function setAssetsBatch(assetsData) {
   try {
-    console.log(`🔍 Batch saving ${Object.keys(assetsData).length} assets to database`)
+    console.log(`🔍 Batch saving ${Object.keys(assetsData).length} assets to Redis`)
     
-    // Get existing database
-    let database = {}
-    try {
-      const blob = await head('assets/database.json')
-      if (blob) {
-        const response = await fetch(blob.url)
-        if (response.ok) {
-          database = await response.json()
-        }
-      }
-    } catch (error) {
-      console.log('No existing database found, creating new one')
+    const client = await getRedisClient()
+    if (!client) {
+      throw new Error('Redis client not available')
     }
     
-    // Add all new assets to the database
+    // Use Redis pipeline for batch operations
+    const pipeline = client.multi()
+    
     let successful = 0
     let failed = 0
     const errors = []
     
     for (const [assetId, data] of Object.entries(assetsData)) {
       try {
-        database[assetId] = data
+        pipeline.set(`asset:${assetId}`, JSON.stringify(data))
         successful++
       } catch (error) {
         console.error(`❌ Failed to add asset ${assetId} to batch:`, error.message)
@@ -285,11 +288,8 @@ async function setAssetsBatch(assetsData) {
       }
     }
     
-    // Save the updated database
-    await put('assets/database.json', JSON.stringify(database), {
-      access: 'public',
-      addRandomSuffix: false
-    })
+    // Execute all operations in pipeline
+    await pipeline.exec()
     
     console.log(`✅ Batch save completed: ${successful} successful, ${failed} failed`)
     return { successful, failed, errors }
@@ -299,39 +299,27 @@ async function setAssetsBatch(assetsData) {
   }
 }
 
-// Batch deletion for improved performance - Single JSON file approach
+// Batch deletion for improved performance using Redis
 async function deleteAssetsBatch(assetIds) {
   try {
-    console.log(`🔍 Batch deleting ${assetIds.length} assets from database`)
+    console.log(`🔍 Batch deleting ${assetIds.length} assets from Redis`)
     
-    // Get existing database
-    let database = {}
-    try {
-      const blob = await head('assets/database.json')
-      if (blob) {
-        const response = await fetch(blob.url)
-        if (response.ok) {
-          database = await response.json()
-        }
-      }
-    } catch (error) {
-      console.log('No existing database found, nothing to delete')
-      return { successful: 0, failed: 0, errors: [] }
+    const client = await getRedisClient()
+    if (!client) {
+      throw new Error('Redis client not available')
     }
     
-    // Remove assets from the database
+    // Use Redis pipeline for batch operations
+    const pipeline = client.multi()
+    
     let successful = 0
     let failed = 0
     const errors = []
     
     for (const assetId of assetIds) {
       try {
-        if (database.hasOwnProperty(assetId)) {
-          delete database[assetId]
-          successful++
-        } else {
-          console.log(`Asset ${assetId} not found in database, skipping deletion`)
-        }
+        pipeline.del(`asset:${assetId}`)
+        successful++
       } catch (error) {
         console.error(`❌ Failed to delete asset ${assetId} from batch:`, error.message)
         failed++
@@ -339,11 +327,8 @@ async function deleteAssetsBatch(assetIds) {
       }
     }
     
-    // Save the updated database
-    await put('assets/database.json', JSON.stringify(database), {
-      access: 'public',
-      addRandomSuffix: false
-    })
+    // Execute all operations in pipeline
+    await pipeline.exec()
     
     console.log(`✅ Batch deletion completed: ${successful} successful, ${failed} failed`)
     return { successful, failed, errors }
@@ -355,55 +340,96 @@ async function deleteAssetsBatch(assetIds) {
 
 async function getAllAssets() {
   try {
-    console.log('🔍 getAllAssets called - reading from database')
+    console.log('🔍 getAllAssets called - reading from Redis')
     
-    const blob = await head('assets/database.json')
-    if (!blob) {
-      console.log('🔍 Database file not found in Blob Store')
+    const client = await getRedisClient()
+    if (!client) {
+      console.log('🔍 Redis client not available')
       return {}
     }
     
-    // Fetch the actual JSON data from the blob
-    const response = await fetch(blob.url)
-    if (!response.ok) {
-      console.log('🔍 Failed to fetch database from Blob Store')
+    // Get all keys with asset: prefix
+    const keys = await client.keys('asset:*')
+    console.log(`🔍 Found ${keys.length} asset keys in Redis`)
+    
+    if (keys.length === 0) {
       return {}
     }
     
-    const database = await response.json()
-    console.log(`🔍 Database returned ${Object.keys(database).length} assets`)
-    return database
+    // Get all assets in batch
+    const pipeline = client.multi()
+    for (const key of keys) {
+      pipeline.get(key)
+    }
+    
+    const results = await pipeline.exec()
+    const assets = {}
+    
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
+      const assetId = key.replace('asset:', '')
+      const data = results[i]
+      
+      if (data) {
+        try {
+          assets[assetId] = JSON.parse(data)
+        } catch (parseError) {
+          console.warn(`Failed to parse asset ${assetId}:`, parseError.message)
+        }
+      }
+    }
+    
+    console.log(`🔍 Redis returned ${Object.keys(assets).length} assets`)
+    return assets
   } catch (error) {
-    console.error('❌ Failed to get all assets from database:', error.message)
+    console.error('❌ Failed to get all assets from Redis:', error.message)
     return {}
   }
 }
 
 async function deleteAllAssets() {
   try {
-    console.log('🔍 deleteAllAssets called - clearing database')
+    console.log('🔍 deleteAllAssets called - clearing Redis')
     
-    // Simply delete the database file
-    try {
-      await del('assets/database.json')
-      console.log('✅ Database file deleted successfully')
-    } catch (error) {
-      console.log('Database file not found or already deleted')
+    const client = await getRedisClient()
+    if (!client) {
+      throw new Error('Redis client not available')
     }
     
-    console.log(`✅ Cleared all assets from database`)
+    // Get all keys with asset: prefix
+    const keys = await client.keys('asset:*')
+    console.log(`🔍 Found ${keys.length} assets to delete from Redis`)
+    
+    if (keys.length === 0) {
+      console.log('✅ No assets to delete')
+      return
+    }
+    
+    // Delete all assets in batch
+    const pipeline = client.multi()
+    for (const key of keys) {
+      pipeline.del(key)
+    }
+    
+    await pipeline.exec()
+    console.log(`✅ Cleared all ${keys.length} assets from Redis`)
   } catch (error) {
-    console.error('❌ Failed to clear database:', error.message)
+    console.error('❌ Failed to clear Redis:', error.message)
     throw error
   }
 }
 
 async function getAssetCount() {
   try {
-    const database = await getAllAssets()
-    return Object.keys(database).length
+    const client = await getRedisClient()
+    if (!client) {
+      return 0
+    }
+    
+    const keys = await client.keys('asset:*')
+    return keys.length
   } catch (error) {
-    console.warn('Failed to get asset count from database:', error.message)
+    console.warn('Failed to get asset count from Redis:', error.message)
     return 0
   }
 }
@@ -415,12 +441,12 @@ async function initializeDatabase() {
     return
   }
   
-  // Check if we already have assets in Blob Store
-  const count = await getAssetCount()
-  if (count > 0) {
-    console.log(`Database already has ${count} assets`)
-    return
-  }
+     // Check if we already have assets in Redis
+   const count = await getAssetCount()
+   if (count > 0) {
+     console.log(`Redis already has ${count} assets`)
+     return
+   }
   
   // Load CSV and import (local development)
   if (!CSV_PATH || !fs.existsSync(CSV_PATH)) {
@@ -454,7 +480,7 @@ async function initializeDatabase() {
      console.log(`Batch import result: ${batchResult.successful} successful, ${batchResult.failed} failed`)
    }
   
-  console.log(`✅ Imported ${imported} records from CSV to Blob Store`)
+     console.log(`✅ Imported ${imported} records from CSV to Redis`)
 }
 
 // Initialize database on startup
@@ -685,11 +711,11 @@ app.get('/api/assets/:assetId', async (req, res) => {
     const searchId = String(req.params.assetId).trim()
     if (!searchId) return res.status(400).json({ error: 'assetId required' })
 
-         // Get asset from Blob Store
+         // Get asset from Redis
      const assetData = await getAsset(searchId)
      
      if (!assetData) {
-       console.log(`🔍 Asset ${searchId} not found in Blob Store`)
+       console.log(`🔍 Asset ${searchId} not found in Redis`)
       return res.json({ 
         assetId: searchId, 
         reference: { fileId: null },
@@ -870,9 +896,9 @@ app.get('/api/assets-page', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1)
     const offset = (page - 1) * pageSize
     
-              console.log('Querying Blob Store for page', page, 'size', pageSize)
+              console.log('Querying Redis for page', page, 'size', pageSize)
      
-     // Get all assets from Blob Store
+     // Get all assets from Redis
      const allAssets = await getAllAssets()
      const assetIds = Object.keys(allAssets).sort((a, b) => {
        const aNum = parseInt(a) || 0
@@ -881,7 +907,7 @@ app.get('/api/assets-page', async (req, res) => {
      })
      
      const total = assetIds.length
-     console.log('Total assets in Blob Store:', total)
+     console.log('Total assets in Redis:', total)
     
     const pageIds = assetIds.slice(offset, offset + pageSize)
     console.log('Retrieved', pageIds.length, 'asset IDs for page')
@@ -909,9 +935,9 @@ app.post('/api/assets-page-filtered', async (req, res) => {
     const filter = req.body.filter || 'all'
     const reviewedAssets = req.body.reviewedAssets || {}
     
-              console.log('Querying Blob Store for page', page, 'size', pageSize, 'filter:', filter)
+              console.log('Querying Redis for page', page, 'size', pageSize, 'filter:', filter)
      
-     // Get all asset IDs from Blob Store
+     // Get all asset IDs from Redis
      const allAssets = await getAllAssets()
      const allIds = Object.keys(allAssets).sort((a, b) => {
        const aNum = parseInt(a) || 0
@@ -936,7 +962,7 @@ app.post('/api/assets-page-filtered', async (req, res) => {
      const offset = (page - 1) * pageSize
      const pageIds = filteredIds.slice(offset, offset + pageSize)
      
-     console.log('Total assets in Blob Store:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
+     console.log('Total assets in Redis:', allIds.length, 'Filtered:', filteredIds.length, 'Page:', pageIds.length)
     
     res.json({
       page,
@@ -961,7 +987,7 @@ app.get('/api/db-status', async (req, res) => {
          res.json({
        totalRecords,
        lastUpdated,
-       databaseType: 'blob-store'
+       databaseType: 'redis'
      })
   } catch (e) {
     console.error('Error getting database status:', e)
@@ -1150,7 +1176,7 @@ app.get('/api/test', (_req, res) => {
     ok: true, 
          message: 'Server is working',
      timestamp: new Date().toISOString(),
-     databaseType: 'blob-store'
+     databaseType: 'redis'
   })
 })
 
@@ -1180,13 +1206,9 @@ app.get('/api/test-asset-storage', async (_req, res) => {
     
          // Clean up
      try {
-       const database = await getAllAssets()
-       if (database[testAssetId]) {
-         delete database[testAssetId]
-         await put('assets/database.json', JSON.stringify(database), {
-           access: 'public',
-           addRandomSuffix: false
-         })
+       const client = await getRedisClient()
+       if (client) {
+         await client.del(`asset:${testAssetId}`)
        }
      } catch (error) {
        console.warn('Failed to clean up test asset:', error.message)
@@ -1269,7 +1291,7 @@ app.get('/api/debug/assets', async (req, res) => {
          res.json({
        totalAssets: totalCount,
        sampleAssets: assetIds,
-       message: `Blob Store has ${totalCount} total assets, showing first 20`
+       message: `Redis has ${totalCount} total assets, showing first 20`
      })
   } catch (error) {
     console.error('Debug assets error:', error)
@@ -1289,19 +1311,19 @@ app.get('/api/debug/asset/:assetId', async (req, res) => {
     const assetData = await getAsset(assetId)
     
          if (assetData) {
-       console.log(`🔍 Found asset ${assetId} in Blob Store:`, assetData)
+       console.log(`🔍 Found asset ${assetId} in Redis:`, assetData)
        res.json({
          assetId,
          found: true,
          databaseData: assetData,
-         message: 'Asset found in Blob Store'
+         message: 'Asset found in Redis'
        })
      } else {
-       console.log(`🔍 Asset ${assetId} not found in Blob Store`)
+       console.log(`🔍 Asset ${assetId} not found in Redis`)
        res.json({
          assetId,
          found: false,
-         message: 'Asset not found in Blob Store'
+         message: 'Asset not found in Redis'
        })
      }
   } catch (error) {
@@ -1339,9 +1361,9 @@ app.get('/api/debug/cache', async (req, res) => {
     const totalCount = await getAssetCount()
     
          res.json({
-       databaseType: 'blob-store',
+       databaseType: 'redis',
        totalAssets: totalCount,
-       message: `Blob Store has ${totalCount} assets`
+       message: `Redis has ${totalCount} assets`
      })
   } catch (error) {
     console.error('Debug database error:', error)
@@ -1369,7 +1391,7 @@ app.get('/api/export-database', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="database-backup-${new Date().toISOString().split('T')[0]}.json"`)
     res.json(exportData)
     
-         console.log(`✅ Exported ${rows.length} records from Blob Store`)
+         console.log(`✅ Exported ${rows.length} records from Redis`)
   } catch (error) {
     console.error('Database export error:', error)
     res.status(500).json({
