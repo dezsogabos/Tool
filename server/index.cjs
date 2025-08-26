@@ -283,16 +283,35 @@ async function getFileIdByAssetId(assetId) {
 }
 
 app.get('/api/health', (_req, res) => {
-  res.json({ 
-    ok: true, 
-    timestamp: new Date().toISOString(),
-    env: {
-      NODE_ENV: process.env.NODE_ENV,
-      PORT: process.env.PORT,
-      app_usr_set: !!process.env.app_usr,
-      app_auth_set: !!process.env.app_auth
-    }
-  })
+  try {
+    console.log('Health check requested')
+    
+    // Test Google Drive API availability
+    const drive = getDrive()
+    const driveStatus = drive ? 'available' : 'not available'
+    console.log('Google Drive API status:', driveStatus)
+    
+    res.json({ 
+      ok: true, 
+      timestamp: new Date().toISOString(),
+      env: {
+        NODE_ENV: process.env.NODE_ENV,
+        PORT: process.env.PORT,
+        app_usr_set: !!process.env.app_usr,
+        app_auth_set: !!process.env.app_auth,
+        ALL_DATASET_FOLDER_ID: process.env.ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET',
+        GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'SET' : 'NOT SET'
+      },
+      googleDrive: driveStatus,
+      message: 'Server is running'
+    })
+  } catch (error) {
+    console.error('Health check error:', error)
+    res.status(500).json({
+      ok: false,
+      error: error.message
+    })
+  }
 })
 
 // Login verification against Streamlit env variables
@@ -383,20 +402,54 @@ app.get('/api/images/:fileId', async (req, res) => {
     const { fileId } = req.params
     if (!fileId) return res.status(400).send('fileId required')
     
+    console.log(`🖼️ Image request for fileId: ${fileId}`)
+    
     const drive = getDrive()
     if (!drive) {
-      return res.status(503).send('Google Drive API not available')
+      console.log(`❌ Google Drive API not available for fileId: ${fileId}`)
+      // Return a simple SVG placeholder image
+      const placeholderSvg = `<svg width="200" height="200" xmlns="http://www.w3.org/2000/svg">
+        <rect width="200" height="200" fill="#f0f0f0"/>
+        <text x="100" y="100" text-anchor="middle" dy=".3em" font-family="Arial" font-size="14" fill="#666">
+          Image Not Available
+        </text>
+        <text x="100" y="120" text-anchor="middle" dy=".3em" font-family="Arial" font-size="10" fill="#999">
+          Google Drive API not configured
+        </text>
+      </svg>`
+      
+      res.setHeader('Content-Type', 'image/svg+xml')
+      return res.send(placeholderSvg)
     }
     
+    console.log(`✅ Google Drive API available, fetching image for fileId: ${fileId}`)
     res.setHeader('Content-Type', 'image/jpeg')
     const dl = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' })
     dl.data
-      .on('end', () => {})
-      .on('error', (err) => { console.error('Download error', err); res.end() })
+      .on('end', () => {
+        console.log(`✅ Image stream ended for fileId: ${fileId}`)
+      })
+      .on('error', (err) => { 
+        console.error(`❌ Download error for fileId: ${fileId}`, err)
+        res.end() 
+      })
       .pipe(res)
   } catch (e) {
-    console.error('Error serving image:', e)
-    res.status(500).send('Failed to fetch image')
+    console.error(`❌ Error serving image for fileId: ${fileId}:`, e)
+    
+    // Return a simple SVG placeholder image on error
+    const placeholderSvg = `<svg width="200" height="200" xmlns="http://www.w3.org/2000/svg">
+      <rect width="200" height="200" fill="#f0f0f0"/>
+      <text x="100" y="100" text-anchor="middle" dy=".3em" font-family="Arial" font-size="14" fill="#666">
+        Image Error
+      </text>
+      <text x="100" y="120" text-anchor="middle" dy=".3em" font-family="Arial" font-size="10" fill="#999">
+        ${fileId}
+      </text>
+    </svg>`
+    
+    res.setHeader('Content-Type', 'image/svg+xml')
+    res.send(placeholderSvg)
   }
 })
 
