@@ -937,21 +937,41 @@ app.get('/api/test', (_req, res) => {
 // Debug endpoint to list available assets in database
 app.get('/api/debug/assets', (req, res) => {
   try {
-    initializeDatabaseIfNeeded()
-    const db = getDb()
+    let totalCount = 0
+    let assetIds = []
     
-    // Get total count first
-    const countRow = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
-    const totalCount = countRow?.cnt || 0
-    
-    const rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT 20').all()
-    const assetIds = rows.map(r => r.asset_id)
-    
-    res.json({
-      totalAssets: totalCount,
-      sampleAssets: assetIds,
-      message: `Database has ${totalCount} total assets, showing first 20`
-    })
+    // In production, use global cache
+    if (process.env.NODE_ENV === 'production') {
+      totalCount = globalAssetCache.size
+      assetIds = Array.from(globalAssetCache.keys()).sort((a, b) => {
+        const aNum = parseInt(a) || 0
+        const bNum = parseInt(b) || 0
+        return aNum - bNum
+      }).slice(0, 20)
+      
+      res.json({
+        totalAssets: totalCount,
+        sampleAssets: assetIds,
+        message: `Global cache has ${totalCount} total assets, showing first 20`
+      })
+    } else {
+      // Local development - use database
+      initializeDatabaseIfNeeded()
+      const db = getDb()
+      
+      // Get total count first
+      const countRow = db.prepare('SELECT COUNT(1) as cnt FROM assets').get()
+      totalCount = countRow?.cnt || 0
+      
+      const rows = db.prepare('SELECT asset_id FROM assets ORDER BY CAST(asset_id AS INTEGER), asset_id LIMIT 20').all()
+      assetIds = rows.map(r => r.asset_id)
+      
+      res.json({
+        totalAssets: totalCount,
+        sampleAssets: assetIds,
+        message: `Database has ${totalCount} total assets, showing first 20`
+      })
+    }
   } catch (error) {
     console.error('Debug assets error:', error)
     res.status(500).json({
@@ -1012,6 +1032,37 @@ app.get('/api/test-asset/:assetId', async (req, res) => {
     console.error(`🧪 Test error for ${req.params.assetId}:`, error)
     res.status(500).json({
       assetId: req.params.assetId,
+      error: error.message
+    })
+  }
+})
+
+// Debug endpoint to show global cache contents
+app.get('/api/debug/cache', (req, res) => {
+  try {
+    if (process.env.NODE_ENV === 'production') {
+      const cacheSize = globalAssetCache.size
+      const cacheKeys = Array.from(globalAssetCache.keys()).sort((a, b) => {
+        const aNum = parseInt(a) || 0
+        const bNum = parseInt(b) || 0
+        return aNum - bNum
+      })
+      
+      res.json({
+        cacheSize,
+        cacheKeys,
+        message: `Global cache has ${cacheSize} assets`
+      })
+    } else {
+      res.json({
+        cacheSize: 0,
+        cacheKeys: [],
+        message: 'Global cache not used in development'
+      })
+    }
+  } catch (error) {
+    console.error('Debug cache error:', error)
+    res.status(500).json({
       error: error.message
     })
   }
