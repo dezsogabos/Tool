@@ -73,6 +73,11 @@ const dbStatus = ref({
   lastUpdated: null
 })
 
+// API Health Check
+const apiHealthStatus = ref(null)
+const checkingApiHealth = ref(false)
+const apiHealthError = ref('')
+
 // Cache management functions
 function isCacheValid(timestamp) {
   return Date.now() - timestamp < CACHE_DURATION
@@ -1923,6 +1928,27 @@ async function refreshDbStatus() {
   }
 }
 
+async function checkApiHealth() {
+  checkingApiHealth.value = true
+  apiHealthError.value = ''
+  
+  try {
+    const response = await fetch('/api/health')
+    if (response.ok) {
+      const data = await response.json()
+      apiHealthStatus.value = data
+      console.log('✅ API health check successful:', data)
+    } else {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    }
+  } catch (error) {
+    console.error('❌ API health check failed:', error)
+    apiHealthError.value = error.message || 'Failed to check API health'
+  } finally {
+    checkingApiHealth.value = false
+  }
+}
+
 async function refreshAssetReviewAfterImport() {
   console.log('🔄 Refreshing asset review after import...')
   
@@ -2638,6 +2664,36 @@ onMounted(() => {
                  </button>
                  <p class="cache-hint">
                    <strong>💡 Tip:</strong> Clearing caches will reset the prefetching system and may improve performance if the app is running slowly.
+                 </p>
+               </div>
+
+               <div class="action-group google-api-section">
+                 <h3>Google Drive API Health Check</h3>
+                 <p class="action-description">
+                   Check the status of your Google Drive API configuration. This helps diagnose image loading issues.
+                 </p>
+                 <div class="api-status" v-if="apiHealthStatus">
+                   <p><strong>API Status:</strong></p>
+                   <ul>
+                     <li>Google Drive API: <span :class="apiHealthStatus.googleDrive === 'available' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.googleDrive }}</span></li>
+                     <li>Environment: {{ apiHealthStatus.env.NODE_ENV || 'Not set' }}</li>
+                     <li>Folder ID: <span :class="apiHealthStatus.env.ALL_DATASET_FOLDER_ID === 'SET' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.ALL_DATASET_FOLDER_ID || 'Not set' }}</span></li>
+                     <li>Credentials: <span :class="apiHealthStatus.env.GOOGLE_APPLICATION_CREDENTIALS === 'SET' ? 'status-ok' : 'status-error'">{{ apiHealthStatus.env.GOOGLE_APPLICATION_CREDENTIALS || 'Not set' }}</span></li>
+                   </ul>
+                 </div>
+                 <button 
+                   class="primary-button" 
+                   @click="checkApiHealth"
+                   :disabled="checkingApiHealth"
+                 >
+                   <span class="primary-icon">{{ checkingApiHealth ? '⏳' : '🔍' }}</span>
+                   {{ checkingApiHealth ? 'Checking...' : 'Check API Health' }}
+                 </button>
+                 <p v-if="apiHealthError" class="error-message">
+                   <strong>❌ Error:</strong> {{ apiHealthError }}
+                 </p>
+                 <p class="api-hint">
+                   <strong>💡 Tip:</strong> If Google Drive API is not available, the app will use placeholder images. Configure your Google Drive API credentials to see actual images.
                  </p>
                </div>
 
@@ -4751,6 +4807,84 @@ input#assetId::placeholder {
 }
 
 .cache-hint {
+  font-size: 14px;
+  color: #666;
+  font-style: italic;
+  margin-top: 10px;
+}
+
+/* Google API Health Check Styles */
+.google-api-section {
+  border: 2px solid #3b82f6;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(59, 130, 246, 0.02) 100%);
+}
+
+.api-status {
+  background: rgba(59, 130, 246, 0.1);
+  border-radius: 8px;
+  padding: 15px;
+  margin: 15px 0;
+}
+
+.api-status ul {
+  margin: 10px 0;
+  padding-left: 20px;
+}
+
+.api-status li {
+  margin: 5px 0;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+}
+
+.status-ok {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.status-error {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.primary-button {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin: 10px 0;
+}
+
+.primary-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.primary-icon {
+  margin-right: 8px;
+}
+
+.error-message {
+  color: #ef4444;
+  font-size: 14px;
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 6px;
+  border-left: 4px solid #ef4444;
+}
+
+.api-hint {
   font-size: 14px;
   color: #666;
   font-style: italic;
