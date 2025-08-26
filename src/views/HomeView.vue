@@ -2207,6 +2207,14 @@ async function refreshAssetReviewAfterImport() {
     assetCache.value.clear()
     prefetchedAssets.value.clear()
     
+    // If clearExisting was selected, also clear review states
+    if (importOptions.value.clearExisting) {
+      console.log('🧹 Clearing review states due to clearExisting option...')
+      reviewedAssets.value = {}
+      localStorage.removeItem('reviewedAssets')
+      console.log('✅ Review states cleared')
+    }
+    
     // Reset current asset if it exists
     if (assetId.value) {
       assetId.value = ''
@@ -2779,6 +2787,10 @@ onMounted(() => {
                   <div class="success-text">
                     <strong>Import Successful!</strong>
                     <p>The Asset Review tab has been automatically refreshed with the new data.</p>
+                    <p v-if="importOptions.clearExisting" class="clear-notice">
+                      <span class="notice-icon">🧹</span>
+                      <strong>Review states cleared:</strong> All accepted/rejected statuses have been reset due to the "Clear existing data" option.
+                    </p>
                     <button @click="activeTab = 'review'" class="view-data-btn">
                       🏠 View Imported Data
                     </button>
@@ -5455,6 +5467,27 @@ input#assetId::placeholder {
 .view-data-btn:hover {
   background: rgba(255, 255, 255, 0.3);
   transform: translateY(-1px);
+}
+
+.clear-notice {
+  margin: 10px 0;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  border-left: 4px solid #fbbf24;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.notice-icon {
+  font-size: 16px;
+  margin-top: 2px;
+}
+
+.clear-notice strong {
+  color: #fbbf24;
+  font-weight: 600;
 }
 
  .cache-stats-display {
