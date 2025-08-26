@@ -241,6 +241,10 @@ function handleSearch() {
       
       referenceFileId.value = data?.reference?.fileId || ''
       console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
+      console.log(`🔍 referenceFileId.value type: ${typeof referenceFileId.value}`)
+      console.log(`🔍 referenceFileId.value === null: ${referenceFileId.value === null}`)
+      console.log(`🔍 referenceFileId.value === 'null': ${referenceFileId.value === 'null'}`)
+      console.log(`🔍 referenceFileId.value === 'undefined': ${referenceFileId.value === 'undefined'}`)
       predicted.value = Array.isArray(data?.predicted) ? data.predicted : []
       
       // Load existing review status if asset was previously reviewed
@@ -960,6 +964,22 @@ onMounted(() => {
     saveTimeout = setTimeout(() => {
       saveApplicationState()
     }, 2000) // Save cache stats after 2 seconds
+  })
+
+  // Watch for changes in referenceFileId to debug rendering issues
+  watch(referenceFileId, (newValue, oldValue) => {
+    console.log(`🔍 referenceFileId watcher - changed from "${oldValue}" to "${newValue}"`)
+    console.log(`🔍 referenceFileId type: ${typeof newValue}`)
+    console.log(`🔍 referenceFileId === null: ${newValue === null}`)
+    console.log(`🔍 referenceFileId === 'null': ${newValue === 'null'}`)
+    console.log(`🔍 referenceFileId === 'undefined': ${newValue === 'undefined'}`)
+    console.log(`🔍 referenceFileId truthy check: ${!!newValue}`)
+    
+    if (newValue && newValue !== oldValue) {
+      nextTick(() => {
+        scrollToReferenceImage()
+      })
+    }
   })
 })
 
@@ -1730,8 +1750,9 @@ const previewImageSource = computed(() => {
 const referenceImageUrl = computed(() => {
   console.log(`🔍 referenceImageUrl computed - referenceFileId: "${referenceFileId.value}", offlineMode: ${offlineMode.value}, localImagePath: "${localImagePath.value}"`)
   
-  if (!referenceFileId.value) {
-    console.log(`🔍 No referenceFileId, returning empty string`)
+  // Check if referenceFileId is empty, null, or undefined
+  if (!referenceFileId.value || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
+    console.log(`🔍 No valid referenceFileId, returning empty string`)
     return ''
   }
   
@@ -2193,7 +2214,7 @@ onMounted(() => {
                                           <div class="grid">
                                             <div class="col ref" ref="referenceImageRef">
                                               <h3>Reference Image</h3>
-                                              <div class="reference-container" v-if="referenceFileId">
+                                              <div class="reference-container" v-if="referenceFileId && referenceFileId !== 'null' && referenceFileId !== 'undefined'" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}`">
                                                 <div class="reference-image-wrapper">
                                                   <img :src="referenceImageUrl" alt="reference" @load="handleImageLoad($event, referenceFileId, assetId)" @error="handleImageError($event, referenceFileId, assetId)" />
                                                   <div class="magnifier-icon" @click.stop="showReferenceImagePreview">
@@ -2210,6 +2231,17 @@ onMounted(() => {
                                                     <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                                       <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
                                                     </svg>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                              <div v-else-if="!loading && !error" class="no-reference-image" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}`">
+                                                <div class="no-image-placeholder">
+                                                  <div class="no-image-icon">🖼️</div>
+                                                  <div class="no-image-text">
+                                                    <strong>No Reference Image Available</strong>
+                                                    <p>This asset doesn't have a reference image in Google Drive.</p>
+                                                    <p class="no-image-hint">Check your Google Drive API configuration or try a different asset ID.</p>
+                                                    <p class="debug-info">Debug: referenceFileId = "{{ referenceFileId }}" (type: {{ typeof referenceFileId }})</p>
                                                   </div>
                                                 </div>
                                               </div>
@@ -5157,6 +5189,63 @@ input#assetId::placeholder {
 
 .api-hint strong {
   color: #1e3a8a;
+}
+
+/* No Reference Image Styles */
+.no-reference-image {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 300px;
+  background: linear-gradient(135deg, rgba(156, 163, 175, 0.1) 0%, rgba(156, 163, 175, 0.05) 100%);
+  border-radius: 12px;
+  border: 2px dashed rgba(156, 163, 175, 0.3);
+  margin: 20px 0;
+}
+
+.no-image-placeholder {
+  text-align: center;
+  padding: 40px 20px;
+  max-width: 400px;
+}
+
+.no-image-icon {
+  font-size: 48px;
+  margin-bottom: 20px;
+  opacity: 0.6;
+}
+
+.no-image-text strong {
+  display: block;
+  font-size: 18px;
+  color: #374151;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.no-image-text p {
+  margin: 8px 0;
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.no-image-hint {
+  font-size: 12px !important;
+  color: #9ca3af !important;
+  font-style: italic;
+  margin-top: 15px !important;
+}
+
+.debug-info {
+  font-size: 11px !important;
+  color: #6b7280 !important;
+  font-family: 'Courier New', monospace !important;
+  background: rgba(156, 163, 175, 0.1) !important;
+  padding: 8px !important;
+  border-radius: 4px !important;
+  margin-top: 10px !important;
+  border: 1px solid rgba(156, 163, 175, 0.2) !important;
 }
 
 /* Import Success Notification Styles */

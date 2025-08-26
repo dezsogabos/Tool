@@ -380,9 +380,13 @@ app.get('/api/assets/:assetId', async (req, res) => {
     let referenceFileId = null
     let predicted = []
     
+    console.log(`🔍 Processing asset ${searchId} - ALL_DATASET_FOLDER_ID: ${ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET'}`)
+    
     if (ALL_DATASET_FOLDER_ID) {
       try {
+        console.log(`🔍 Attempting to get reference file ID for asset ${searchId}`)
         referenceFileId = await getFileIdByAssetId(searchId)
+        console.log(`🔍 Reference file ID result for ${searchId}: ${referenceFileId}`)
         
         for (let i = 0; i < predictedIds.length; i += 1) {
           const pid = String(predictedIds[i])
@@ -393,8 +397,15 @@ app.get('/api/assets/:assetId', async (req, res) => {
       } catch (driveError) {
         console.warn('Google Drive API error, continuing without file IDs:', driveError.message)
         // Continue without file IDs - frontend will handle offline mode
+        referenceFileId = null
+        for (let i = 0; i < predictedIds.length; i += 1) {
+          const pid = String(predictedIds[i])
+          const score = typeof predictedScores[i] === 'number' ? predictedScores[i] : null
+          predicted.push({ id: pid, score, fileId: null })
+        }
       }
     } else {
+      console.log(`🔍 ALL_DATASET_FOLDER_ID not set, running in offline mode`)
       // Offline mode - just return the asset data without file IDs
       for (let i = 0; i < predictedIds.length; i += 1) {
         const pid = String(predictedIds[i])
