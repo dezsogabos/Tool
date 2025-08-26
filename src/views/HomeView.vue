@@ -1585,6 +1585,17 @@ function clearAssetCache(assetId) {
   console.log(`🧹 Cleared cache for asset: ${assetId}`)
 }
 
+// Function to clear all caches and force refresh
+function clearAllCachesAndRefresh() {
+  clearAllCaches()
+  console.log('🧹 All caches cleared, forcing refresh...')
+  // Force a refresh of the current asset if one is loaded
+  if (assetId.value.trim()) {
+    console.log(`🔄 Refreshing current asset: ${assetId.value}`)
+    handleSearch()
+  }
+}
+
 // Debug function to check what's in the database for an asset
 async function debugAsset(assetId) {
   try {
