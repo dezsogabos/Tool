@@ -280,6 +280,22 @@ async function getFileIdByAssetId(assetId) {
     console.log(`🔍 Found ${items.length} files for asset ${assetId}`)
     if (items.length > 0) {
       console.log(`🔍 File ID: ${items[0].id}, Name: ${items[0].name}`)
+    } else {
+      console.log(`❌ No file found for asset ${assetId} with name ${fileName}`)
+      // Try alternative file extensions
+      const extensions = ['.jpeg', '.png', '.gif', '.bmp', '.webp']
+      for (const ext of extensions) {
+        const altFileName = `${assetId}${ext}`
+        const altQ = `name='${altFileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
+        console.log(`🔍 Trying alternative extension: ${altQ}`)
+        const altRes = await drive.files.list({ q: altQ, fields: 'files(id, name)' })
+        const altItems = altRes.data.files || []
+        if (altItems.length > 0) {
+          console.log(`✅ Found file with alternative extension: ${altFileName} -> ${altItems[0].id}`)
+          return altItems[0].id
+        }
+      }
+      console.log(`❌ No file found for asset ${assetId} with any common extension`)
     }
     return items.length ? items[0].id : null
   } catch (error) {
