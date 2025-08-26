@@ -185,12 +185,13 @@ function handleSearch() {
   
   // Check cache first
   const cachedData = getCachedAsset(currentAssetId)
-  if (cachedData && cachedData.reference && cachedData.reference.fileId) {
+  if (cachedData && cachedData.reference !== undefined) {
     console.log(`🚀 Using cached data for asset: ${currentAssetId}`)
     console.log(`🔍 Cached data:`, cachedData)
     console.log(`🔍 Cached data.reference:`, cachedData.reference)
     console.log(`🔍 Cached data.reference?.fileId:`, cachedData.reference?.fileId)
     
+    // Handle null fileId properly - null is valid when asset has no reference image
     referenceFileId.value = cachedData.reference.fileId
     console.log(`🔍 Set referenceFileId.value to: "${referenceFileId.value}"`)
     predicted.value = Array.isArray(cachedData.predicted) ? cachedData.predicted : []
@@ -227,12 +228,12 @@ function handleSearch() {
     assetDataReceived.value = true // Asset found in cache
     return
   } else if (cachedData) {
-    // Cached data exists but has no valid reference
-    console.log(`🔍 Cached data exists but has no valid reference for asset: ${currentAssetId}`)
+    // Cached data exists but has no reference object at all
+    console.log(`🔍 Cached data exists but has no reference object for asset: ${currentAssetId}`)
     console.log(`🔍 Cached data:`, cachedData)
     
     // Clear the cache for this asset so it can be re-fetched from API
-    console.log(`🧹 Clearing cache for asset ${currentAssetId} due to missing reference data`)
+    console.log(`🧹 Clearing cache for asset ${currentAssetId} due to missing reference object`)
     assetCache.value.delete(currentAssetId)
     prefetchedAssets.value.delete(currentAssetId)
     
