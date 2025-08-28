@@ -635,46 +635,58 @@ async function getBatchFileIds(assetIds) {
        
        console.log(`🔍 Database lookup completed: ${Object.values(result).filter(id => id !== null).length} file IDs found`)
        
-       // If we have missing file IDs, fetch them from Google Drive
-       if (missingAssetIds.length > 0) {
-         console.log(`🔍 Fetching ${missingAssetIds.length} missing file IDs from Google Drive...`)
+            // If we have missing file IDs, fetch them from Google Drive
+     if (missingAssetIds.length > 0) {
+       console.log(`🔍 Fetching ${missingAssetIds.length} missing file IDs from Google Drive...`)
+       
+       let cachedCount = 0
+       
+       // Use bulk lookup for larger batches, individual lookups for smaller ones
+       if (missingAssetIds.length > 10) {
+         // Bulk lookup for efficiency
+         const bulkFileIds = await getBulkFileIds(missingAssetIds)
          
-         // Fetch all files from Google Drive to get missing file IDs
-         const allFiles = []
-         let pageToken = null
-         
-         do {
-           const response = await drive.files.list({
-             q: `'${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`,
-             fields: 'files(id, name), nextPageToken',
-             pageSize: 1000,
-             pageToken: pageToken
-           })
-           
-           allFiles.push(...(response.data.files || []))
-           pageToken = response.data.nextPageToken
-         } while (pageToken)
-         
-         // Create a map of filename to file ID
-         const fileIdMap = {}
-         for (const file of allFiles) {
-           const nameWithoutExt = file.name.replace(/\.(jpg|jpeg|png|gif|bmp|webp)$/i, '')
-           fileIdMap[nameWithoutExt] = file.id
-         }
-         
-         // Look up missing file IDs and cache them
-         let cachedCount = 0
          for (const assetId of missingAssetIds) {
-           const fileId = fileIdMap[assetId] || null
+           const fileId = bulkFileIds[assetId] || null
            if (fileId) {
-             await setCachedFileId(assetId, fileId)
+             // Cache the file ID (don't await to avoid blocking)
+             setCachedFileId(assetId, fileId).catch(error => {
+               console.warn(`Failed to cache file ID for ${assetId}:`, error.message)
+             })
              cachedCount++
            }
            result[assetId] = fileId
          }
+       } else {
+         // Individual lookups for smaller batches
+         const missingFileIdPromises = missingAssetIds.map(async (assetId) => {
+           try {
+             const fileId = await getFileIdByAssetId(assetId)
+             if (fileId) {
+               // Cache the file ID (don't await to avoid blocking)
+               setCachedFileId(assetId, fileId).catch(error => {
+                 console.warn(`Failed to cache file ID for ${assetId}:`, error.message)
+               })
+             }
+             return { assetId, fileId }
+           } catch (error) {
+             console.warn(`Failed to get file ID for ${assetId}:`, error.message)
+             return { assetId, fileId: null }
+           }
+         })
          
-         console.log(`✅ Fetched and cached ${cachedCount} missing file IDs`)
+         // Wait for all file ID lookups to complete
+         const missingResults = await Promise.all(missingFileIdPromises)
+         
+         // Update result with found file IDs
+         for (const { assetId, fileId } of missingResults) {
+           result[assetId] = fileId
+           if (fileId) cachedCount++
+         }
        }
+       
+       console.log(`✅ Fetched and cached ${cachedCount} missing file IDs`)
+     }
        
        return result
      }
@@ -751,6 +763,52 @@ async function clearAllFileIds() {
   }
 }
 
+// Bulk file ID lookup for multiple assets (more efficient)
+async function getBulkFileIds(assetIds) {
+  const drive = getDrive()
+  if (!drive || !ALL_DATASET_FOLDER_ID) {
+    return {}
+  }
+  
+  try {
+    // Create a single query for all asset IDs with all extensions
+    const extensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']
+    const nameConditions = []
+    
+    for (const assetId of assetIds) {
+      for (const ext of extensions) {
+        nameConditions.push(`name='${assetId}.${ext}'`)
+      }
+    }
+    
+    if (nameConditions.length === 0) return {}
+    
+    const q = `(${nameConditions.join(' or ')}) and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
+    
+    const res = await drive.files.list({ 
+      q, 
+      fields: 'files(id, name)',
+      pageSize: 1000
+    })
+    
+    const items = res.data.files || []
+    const result = {}
+    
+    // Map file names back to asset IDs
+    for (const file of items) {
+      const nameWithoutExt = file.name.replace(/\.(jpg|jpeg|png|gif|bmp|webp)$/i, '')
+      if (assetIds.includes(nameWithoutExt)) {
+        result[nameWithoutExt] = file.id
+      }
+    }
+    
+    return result
+  } catch (error) {
+    console.error('Error in bulk file ID lookup:', error.message)
+    return {}
+  }
+}
+
 // Function to get file ID storage status
 async function getFileIdStorageStatus() {
   try {
@@ -793,8 +851,11 @@ async function getFileIdByAssetId(assetId) {
   }
   
   try {
-    const fileName = `${assetId}.jpg`
-    const q = `name='${fileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
+    // Try all extensions in a single query using OR conditions
+    const extensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']
+    const nameConditions = extensions.map(ext => `name='${assetId}.${ext}'`).join(' or ')
+    const q = `(${nameConditions}) and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
+    
     const res = await drive.files.list({ q, fields: 'files(id, name)' })
     const items = res.data.files || []
     
@@ -807,26 +868,8 @@ async function getFileIdByAssetId(assetId) {
       })
       
       return fileId
-    } else {
-      // Try alternative file extensions
-      const extensions = ['.jpeg', '.png', '.gif', '.bmp', '.webp']
-      for (const ext of extensions) {
-        const altFileName = `${assetId}${ext}`
-        const altQ = `name='${altFileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
-        const altRes = await drive.files.list({ q: altQ, fields: 'files(id, name)' })
-        const altItems = altRes.data.files || []
-        if (altItems.length > 0) {
-          const fileId = altItems[0].id
-          
-          // Cache the file ID for future use (don't await to avoid blocking)
-          setCachedFileId(assetId, fileId).catch(error => {
-            console.warn(`Failed to cache file ID for ${assetId}:`, error.message)
-          })
-          
-          return fileId
-        }
-      }
     }
+    
     return null
   } catch (error) {
     console.error(`Error getting file ID for asset ${assetId}:`, error.message)
