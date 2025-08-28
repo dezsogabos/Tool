@@ -39,6 +39,7 @@ const imageUrlCache = ref(new Map()) // Cache for image URLs: { fileId: { url, t
 
 // Backup and restore functionality
 const selectedBackupFile = ref(null)
+const selectedReviewBackupFile = ref(null)
 const isImporting = ref(false)
 const backupProgress = ref({
   show: false,
@@ -2739,6 +2740,17 @@ function handleBackupFileSelect(event) {
   }
 }
 
+function handleReviewBackupFileSelect(event) {
+  const file = event.target.files[0]
+  if (file && file.type === 'application/json') {
+    selectedReviewBackupFile.value = file
+    console.log('Selected review backup file:', file.name)
+  } else {
+    alert('Please select a valid JSON backup file')
+    event.target.value = ''
+  }
+}
+
 async function importDatabase() {
   if (!selectedBackupFile.value) {
     alert('Please select a backup file first')
@@ -3133,29 +3145,13 @@ async function importDatabase() {
                  Export to CSV
                </button>
                
-               <button 
-                 class="export-button backup-button" 
-                 @click="exportReviewedAssets"
-                 :disabled="Object.keys(reviewedAssets).length === 0"
-               >
-                 <span class="export-icon">💾</span>
-                 Export Backup
-               </button>
-               
-               <button 
-                 class="export-button import-button" 
-                 @click="importReviewedAssets"
-               >
-                 <span class="export-icon">📥</span>
-                 Import Backup
-               </button>
+
              </div>
              
              <div class="export-info">
                <p><strong>📊 Export to CSV:</strong> Export filtered review data as CSV for analysis</p>
-               <p><strong>💾 Export Backup:</strong> Save all review data as JSON backup file</p>
-               <p><strong>📥 Import Backup:</strong> Restore review data from a backup file</p>
                <p><strong>📋 Preview:</strong> View and filter your review data before exporting</p>
+               <p><strong>💡 Note:</strong> For backup and restore functionality, use the "Backup & Restore" tab</p>
              </div>
              
              <p v-if="Object.keys(reviewedAssets).length === 0" class="no-data">
@@ -3741,6 +3737,49 @@ async function importDatabase() {
                    {{ isImporting ? 'Restoring...' : 'Restore Database' }}
                  </button>
                </div>
+               
+               <div class="backup-card">
+                 <div class="backup-icon">
+                   <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                     <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" fill="currentColor"/>
+                   </svg>
+                 </div>
+                 <h3>💾 Export Review Data</h3>
+                 <p>Download a backup of your review decisions</p>
+                 <button @click="exportReviewedAssets" class="backup-btn export" :disabled="Object.keys(reviewedAssets).length === 0">
+                   Export Review Data
+                 </button>
+               </div>
+               
+               <div class="backup-card">
+                 <div class="backup-icon">
+                   <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                     <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor"/>
+                   </svg>
+                 </div>
+                 <h3>📥 Restore Review Data</h3>
+                 <p>Upload a review backup file to restore your decisions</p>
+                 <input 
+                   type="file" 
+                   ref="reviewBackupFileInput" 
+                   @change="handleReviewBackupFileSelect" 
+                   accept=".json"
+                   style="display: none"
+                 />
+                 <button @click="$refs.reviewBackupFileInput.click()" class="backup-btn import">
+                   Choose Review Backup File
+                 </button>
+                 <div v-if="selectedReviewBackupFile" class="selected-file">
+                   Selected: {{ selectedReviewBackupFile.name }}
+                 </div>
+                 <button 
+                   v-if="selectedReviewBackupFile" 
+                   @click="importReviewedAssets" 
+                   class="backup-btn restore"
+                 >
+                   Restore Review Data
+                 </button>
+               </div>
              </div>
              
              <div class="backup-info">
@@ -3748,9 +3787,10 @@ async function importDatabase() {
                <ul>
                  <li>Create regular backups before major changes</li>
                  <li>Store backups in a safe location</li>
-                 <li>Backup files contain all your imported CSV data</li>
-                 <li>Review progress is saved in your browser</li>
-                 <li>Backup files are in JSON format for easy sharing</li>
+                 <li><strong>Database Backup:</strong> Contains all your imported CSV data and file IDs</li>
+                 <li><strong>Review Data Backup:</strong> Contains your review decisions (accepted/rejected assets)</li>
+                 <li>Review progress is also saved automatically in your browser</li>
+                 <li>All backup files are in JSON format for easy sharing</li>
                </ul>
              </div>
              
