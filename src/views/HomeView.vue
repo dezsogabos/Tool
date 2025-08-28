@@ -1977,16 +1977,11 @@ function loadOfflineSettings() {
     }
   }
   
-  // Auto-enable offline mode if local path is available and no explicit setting exists
-  if (savedOfflineMode !== null) {
-    offlineMode.value = JSON.parse(savedOfflineMode)
-    console.log(`🔍 Set offlineMode.value to: ${offlineMode.value} (from localStorage)`)
-  } else if (localImagePath.value) {
-    // Auto-enable offline mode if we have a local path but no saved preference
-    offlineMode.value = true
-    console.log(`🔍 Auto-enabled offline mode because local images are available at: ${localImagePath.value}`)
-    localStorage.setItem('offlineMode', JSON.stringify(true))
-  }
+      // Load offline mode setting from localStorage
+    if (savedOfflineMode !== null) {
+      offlineMode.value = JSON.parse(savedOfflineMode)
+      console.log(`🔍 Set offlineMode.value to: ${offlineMode.value} (from localStorage)`)
+    }
   
   console.log(`🔍 Final state - offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
 }
