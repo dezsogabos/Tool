@@ -1,0 +1,3 @@
+[33mae0819c[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Fix: Force online mode on Vercel deployment to resolve predicted images not loading
+[33mf23b6f0[m[33m ([m[1;31morigin/main[m[33m)[m Fix: Remove stray 'Reference image not found' message that was always showing
+[33mcedeebd[m Moved the backup functionality to new tab

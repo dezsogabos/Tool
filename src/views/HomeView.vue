@@ -2201,8 +2201,15 @@ const predictedImageUrls = computed(() => {
       return { id: p.id, fileId: p.fileId, url }
     }
     
-    // If no fileId and not in offline mode with local path, return empty URL
-    if (!p.fileId) return { id: p.id, fileId: p.fileId, url: '' }
+    // If no fileId and not in offline mode with local path, handle Vercel case
+    if (!p.fileId) {
+      // On Vercel, we need to try to get the fileId dynamically via error handling
+      if (isVercel.value) {
+        // Return a placeholder URL that will trigger error handling to fetch the real fileId
+        return { id: p.id, fileId: p.fileId, url: `/api/images/placeholder-${p.id}` }
+      }
+      return { id: p.id, fileId: p.fileId, url: '' }
+    }
     
     const cacheKey = `${p.fileId}_${offlineMode.value ? 'offline' : 'online'}_${localImagePath.value || 'none'}`
     const cached = imageUrlCache.value.get(cacheKey)
@@ -2297,6 +2304,27 @@ async function handleImageError(event, fileId, assetId = null) {
   console.log(`❌ Current src that failed: ${event.target.src}`)
   console.log(`❌ assetId: ${assetId}`)
   console.log(`❌ offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
+  console.log(`❌ isVercel: ${isVercel.value}`)
+  
+  // Special handling for Vercel deployment
+  if (isVercel.value && !fileId && assetId) {
+    console.log(`🌐 Vercel detected - attempting to retrieve fileId for asset ${assetId}`)
+    try {
+      const response = await fetch(`/api/file-id/${assetId}`)
+      const data = await response.json()
+      if (data.success && data.fileId) {
+        console.log(`✅ Retrieved fileId ${data.fileId} for asset ${assetId} on Vercel`)
+        // Update source tracking
+        updateImageSource(data.fileId, 'api')
+        event.target.src = `/api/images/${data.fileId}`
+        return
+      } else {
+        console.log(`❌ Failed to retrieve fileId for asset ${assetId} on Vercel`)
+      }
+    } catch (error) {
+      console.error(`❌ Error retrieving fileId for asset ${assetId} on Vercel:`, error)
+    }
+  }
   
   // In offline mode, check local file system first, then fall back to Google Drive if not found
   if (offlineMode.value && localImagePath.value) {
@@ -3137,7 +3165,7 @@ async function importDatabase() {
                                                     @click="togglePredSelected(p.id)"
                                                     @contextmenu.prevent="togglePredRejected(p.id)"
                                                   >
-                                                    <img v-if="p.fileId || (offlineMode && localImagePath)" :src="predictedImageUrls.find(pu => pu.id === p.id)?.url || ''" :alt="p.id" @load="handleImageLoad($event, p.fileId, p.id)" @error="handleImageError($event, p.fileId, p.id)" />
+                                                    <img v-if="p.fileId || (offlineMode && localImagePath) || (!isVercel && p.id)" :src="predictedImageUrls.find(pu => pu.id === p.id)?.url || ''" :alt="p.id" @load="handleImageLoad($event, p.fileId, p.id)" @error="handleImageError($event, p.fileId, p.id)" />
                                                     <div class="magnifier-icon" @click.stop="showImagePreview(p)">
                                                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                                         <circle cx="11" cy="11" r="8"></circle>
