@@ -1,5 +1,0 @@
-[33mfbfcf76[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Fix 'No matching asset IDs found' message for assets without reference images
-[33m3e8b795[m[33m ([m[1;31morigin/main[m[33m)[m Add detailed debugging to track null value assignment
-[33m103578b[m Preserve null values for reference file ID instead of converting to empty string
-[33m3dbfb20[m Fix null handling in reference file ID processing
-[33m5d6e9f7[m Fix API response structure for assets not found in database

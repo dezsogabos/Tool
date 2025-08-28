@@ -190,21 +190,16 @@ async function getTursoClient() {
       const url = process.env.TURSO_DATABASE_URL
       const authToken = process.env.TURSO_AUTH_TOKEN
       
-      // For local development, use in-memory SQLite if no Turso URL is provided
-      if (!url) {
-        console.log('🔧 Local development detected - using in-memory SQLite')
-        // For local development, create a temporary file-based database
-        const tempDbPath = path.join(__dirname, 'temp_local.db')
-        tursoClient = createTursoClient({
-          url: `file:${tempDbPath}`
-        })
-      } else {
-        console.log('🌐 Production detected - using Turso SQLite')
-        tursoClient = createTursoClient({
-          url: url,
-          authToken: authToken
-        })
+      // Always require Turso credentials
+      if (!url || !authToken) {
+        throw new Error('TURSO_DATABASE_URL and TURSO_AUTH_TOKEN environment variables are required')
       }
+      
+      console.log('🌐 Connecting to Turso SQLite database')
+      tursoClient = createTursoClient({
+        url: url,
+        authToken: authToken
+      })
       
       // Test the connection
       await tursoClient.execute('SELECT 1')
