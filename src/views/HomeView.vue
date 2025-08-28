@@ -1946,6 +1946,18 @@ function schedulePrefetch() {
 }
 
 function toggleOfflineMode() {
+  // Detect if running on Vercel (production)
+  const isVercel = window.location.hostname.includes('vercel.app') || 
+                   window.location.hostname.includes('vercel.com') ||
+                   window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+  
+  // Prevent enabling offline mode on Vercel
+  if (isVercel && !offlineMode.value) {
+    console.log('🌐 Vercel detected - cannot enable offline mode (local files not available)')
+    alert('Offline mode is not available on Vercel deployment. Local image files are not accessible.')
+    return
+  }
+  
   console.log(`🔍 Toggling offline mode from ${offlineMode.value} to ${!offlineMode.value}`)
   offlineMode.value = !offlineMode.value
   saveOfflineSettings()
@@ -1960,8 +1972,21 @@ function toggleOfflineMode() {
 }
 
 function saveOfflineSettings() {
-  localStorage.setItem('offlineMode', JSON.stringify(offlineMode.value))
-  localStorage.setItem('localImagePath', localImagePath.value)
+  // Detect if running on Vercel (production)
+  const isVercel = window.location.hostname.includes('vercel.app') || 
+                   window.location.hostname.includes('vercel.com') ||
+                   window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+  
+  // Don't save offline mode on Vercel - force online mode
+  if (isVercel) {
+    console.log('🌐 Vercel detected - preventing offline mode save')
+    localStorage.setItem('offlineMode', 'false')
+    localStorage.setItem('localImagePath', '')
+  } else {
+    localStorage.setItem('offlineMode', JSON.stringify(offlineMode.value))
+    localStorage.setItem('localImagePath', localImagePath.value)
+  }
+  
   try {
     saveApplicationState()
   } catch (error) {
@@ -1976,6 +2001,13 @@ function saveOfflineSettings() {
 }
 
 function loadOfflineSettings() {
+  // Detect if running on Vercel (production)
+  const isVercel = window.location.hostname.includes('vercel.app') || 
+                   window.location.hostname.includes('vercel.com') ||
+                   window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+  
+  console.log(`🔍 Environment detection - hostname: ${window.location.hostname}, isVercel: ${isVercel}`)
+  
   const savedOfflineMode = localStorage.getItem('offlineMode')
   const savedLocalPath = localStorage.getItem('localImagePath')
   
@@ -2004,11 +2036,21 @@ function loadOfflineSettings() {
     }
   }
   
-      // Load offline mode setting from localStorage
-    if (savedOfflineMode !== null) {
-      offlineMode.value = JSON.parse(savedOfflineMode)
-      console.log(`🔍 Set offlineMode.value to: ${offlineMode.value} (from localStorage)`)
-    }
+  // Load offline mode setting from localStorage
+  if (savedOfflineMode !== null) {
+    offlineMode.value = JSON.parse(savedOfflineMode)
+    console.log(`🔍 Set offlineMode.value to: ${offlineMode.value} (from localStorage)`)
+  }
+  
+  // Force online mode on Vercel (production) since local files don't exist there
+  if (isVercel) {
+    console.log('🌐 Vercel detected - forcing online mode for Google Drive API')
+    offlineMode.value = false
+    localStorage.setItem('offlineMode', 'false')
+    // Clear local image path on Vercel since it's not available
+    localImagePath.value = ''
+    localStorage.setItem('localImagePath', '')
+  }
   
   console.log(`🔍 Final state - offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
 }
@@ -2049,6 +2091,13 @@ function getImageUrl(fileId, assetId = null) {
 }
 
 
+
+// Environment detection
+const isVercel = computed(() => {
+  return window.location.hostname.includes('vercel.app') || 
+         window.location.hostname.includes('vercel.com') ||
+         window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+})
 
 // Computed properties for reactive image sources
 const referenceImageSource = computed(() => {
@@ -3454,7 +3503,17 @@ async function importDatabase() {
                    Configure offline mode to load images from a local drive path instead of Google Drive API.
                  </p>
                  <div class="offline-mode-content">
-                   <div class="setting-item">
+                   <div class="setting-item" v-if="isVercel">
+                     <div class="setting-info">
+                       <h4>Offline Mode Unavailable</h4>
+                       <p>Offline mode is not available on Vercel deployment. Local image files are not accessible in the cloud environment. The application will use Google Drive API for all images.</p>
+                     </div>
+                     <div class="vercel-notice">
+                       <span class="vercel-icon">🌐</span>
+                       <span class="vercel-text">Online Mode (Vercel)</span>
+                     </div>
+                   </div>
+                   <div class="setting-item" v-else>
                      <div class="setting-info">
                        <h4>Enable Offline Mode</h4>
                        <p>When enabled, the application will first attempt to load images from the specified local path before falling back to online sources.</p>
@@ -3468,7 +3527,7 @@ async function importDatabase() {
                        <span class="toggle-text">{{ offlineMode ? 'Offline' : 'Online' }} Mode</span>
                      </button>
                    </div>
-                   <div class="setting-item has-input-group" v-if="offlineMode">
+                   <div class="setting-item has-input-group" v-if="offlineMode && !isVercel">
                      <div class="setting-info">
                        <h4>Local Image Path</h4>
                        <p>Configure the local directory where your images are stored. Images should be named using the asset ID as filename (e.g., 123.jpg).</p>
@@ -3483,7 +3542,7 @@ async function importDatabase() {
                        />
                      </div>
                    </div>
-                   <div class="setting-item" v-if="offlineMode">
+                   <div class="setting-item" v-if="offlineMode && !isVercel">
                      <div class="setting-hint">
                        <p><strong>💡 How it works:</strong></p>
                        <ul>
@@ -5671,6 +5730,27 @@ input#assetId::placeholder {
 .dark-mode .offline-mode-frame h3 {
   color: #ffffff !important;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Vercel notice styling */
+.vercel-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  color: white;
+  border-radius: 1rem;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.vercel-icon {
+  font-size: 1.25rem;
+}
+
+.vercel-text {
+  font-size: 1rem;
 }
 
 .action-description {
