@@ -2263,6 +2263,7 @@ async function startImport() {
     // Check if this is a chunked import (large file)
     if (result.jobId) {
       console.log('🔄 Large file detected, using chunked processing')
+      console.log('🔄 Job ID received:', result.jobId)
       importResult.value = {
         jobId: result.jobId,
         totalRecords: result.totalRecords,
@@ -2274,6 +2275,14 @@ async function startImport() {
         errorDetails: []
       }
       
+      // Set initial progress message
+      progressMessage.value = 'Starting background import...'
+      importProgress.value = 0
+      
+      // Force a UI update
+      await nextTick()
+      
+      console.log('🔄 Starting progress monitoring for job:', result.jobId)
       // Start monitoring the import progress
       await monitorImportProgress(result.jobId)
     } else {
@@ -2303,7 +2312,6 @@ async function startImport() {
       errors: 1,
       errorDetails: [{ line: 0, message: error.message }]
     }
-  } finally {
     importing.value = false
   }
 }
@@ -2311,23 +2319,35 @@ async function startImport() {
 async function monitorImportProgress(jobId) {
   console.log(`🔄 Monitoring import progress for job: ${jobId}`)
   
-  const maxAttempts = 300 // 5 minutes with 1-second intervals
+  const maxAttempts = 600 // 10 minutes with variable intervals
   let attempts = 0
+  let lastProgress = 0
   
   while (attempts < maxAttempts) {
     try {
       const response = await fetch(`/api/import-status/${jobId}`)
+      
       if (!response.ok) {
         throw new Error(`Failed to check progress: ${response.statusText}`)
       }
       
       const jobStatus = await response.json()
-      console.log('📊 Import progress:', jobStatus)
       
-      // Update progress display
-      if (jobStatus.progress !== undefined) {
+      // Update progress display with forced UI refresh
+      if (jobStatus.progress !== undefined && jobStatus.progress !== null) {
+        const oldProgress = importProgress.value
         importProgress.value = jobStatus.progress
         progressMessage.value = `Processing... ${jobStatus.progress}% (${jobStatus.processed || 0}/${jobStatus.totalRecords || 0} records)`
+        lastProgress = jobStatus.progress
+        
+        // Force a UI update by triggering Vue's reactivity
+        await nextTick()
+      } else {
+        // If no progress but job is pending, show a different message
+        if (jobStatus.status === 'pending') {
+          progressMessage.value = 'Starting import process...'
+          await nextTick()
+        }
       }
       
       // Check if job is completed
@@ -2350,6 +2370,7 @@ async function monitorImportProgress(jobId) {
           console.log('🔄 Import successful, refreshing asset review tab...')
           await refreshAssetReviewAfterImport()
         }
+        importing.value = false
         return
         
       } else if (jobStatus.status === 'failed') {
@@ -2363,9 +2384,10 @@ async function monitorImportProgress(jobId) {
           status: 'failed'
         }
         progressMessage.value = `Import failed: ${jobStatus.error || 'Unknown error'}`
+        importing.value = false
         return
         
-      } else if (jobStatus.status === 'processing') {
+      } else if (jobStatus.status === 'processing' || jobStatus.status === 'pending') {
         // Continue monitoring
         attempts++
         if (attempts >= maxAttempts) {
@@ -2380,11 +2402,26 @@ async function monitorImportProgress(jobId) {
             message: 'Import monitoring timed out. Check status manually.'
           }
           progressMessage.value = 'Import monitoring timed out. Check status manually.'
+          importing.value = false
           return
         }
         
-        // Wait 1 second before next check
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        // Polling intervals: 2-second intervals as requested
+        let delay = 2000 // Default 2 seconds
+        if (lastProgress < 10) {
+          delay = 1500 // Poll every 1.5 seconds for first 10%
+        } else if (lastProgress < 50) {
+          delay = 1800 // Poll every 1.8 seconds for 10-50%
+        } else {
+          delay = 2000 // Poll every 2 seconds for 50%+
+        }
+        
+        // If status is still pending, poll more frequently
+        if (jobStatus.status === 'pending') {
+          delay = 1500 // Poll every 1.5 seconds for pending jobs
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, delay))
         
       }
       
@@ -2402,6 +2439,7 @@ async function monitorImportProgress(jobId) {
           status: 'monitoring_failed'
         }
         progressMessage.value = 'Failed to monitor import progress'
+        importing.value = false
         return
       }
       
@@ -2409,6 +2447,9 @@ async function monitorImportProgress(jobId) {
       await new Promise(resolve => setTimeout(resolve, 2000))
     }
   }
+  
+  // Fallback: ensure importing is set to false if we exit the loop
+  importing.value = false
 }
 
 async function refreshDbStatus() {
@@ -3140,10 +3181,12 @@ async function importDatabase() {
                 <div 
                   class="progress-fill"
                   :style="{ width: importProgress + '%' }"
+                  :class="{ 'active': importProgress > 0 && importProgress < 100 }"
                 ></div>
               </div>
               <p class="progress-text">
                 {{ progressMessage }}
+                <span v-if="importProgress > 0 && importProgress < 100" class="processing-indicator">⏳</span>
               </p>
             </div>
 
@@ -6833,6 +6876,27 @@ input#assetId::placeholder {
   height: 100%;
   background: linear-gradient(90deg, #3498db, #2980b9);
   transition: width 0.3s ease;
+}
+
+.progress-fill.active {
+  background: linear-gradient(90deg, #3498db, #2980b9, #3498db);
+  background-size: 200% 100%;
+  animation: progress-pulse 2s ease-in-out infinite;
+}
+
+@keyframes progress-pulse {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.processing-indicator {
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .progress-text {

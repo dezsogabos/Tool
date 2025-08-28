@@ -59,7 +59,7 @@ app.use((err, req, res, next) => {
   })
 })
 
-const PORT = process.env.PORT || 5174
+const PORT = process.env.PORT || 3001
 
 // Load config from file if available
 const configPath = path.resolve(__dirname, 'config.json')
@@ -193,8 +193,10 @@ async function getTursoClient() {
       // For local development, use in-memory SQLite if no Turso URL is provided
       if (!url) {
         console.log('🔧 Local development detected - using in-memory SQLite')
+        // For local development, create a temporary file-based database
+        const tempDbPath = path.join(__dirname, 'temp_local.db')
         tursoClient = createTursoClient({
-          url: 'file::memory:'
+          url: `file:${tempDbPath}`
         })
       } else {
         console.log('🌐 Production detected - using Turso SQLite')
@@ -208,8 +210,8 @@ async function getTursoClient() {
       await tursoClient.execute('SELECT 1')
       console.log('✅ SQLite client connected')
       
-      // Initialize the database schema
-      await initializeTursoSchema()
+      // Initialize the database schema (pass the client directly to avoid circular dependency)
+      await initializeTursoSchema(tursoClient)
       
     } catch (error) {
       console.error('❌ Failed to initialize SQLite client:', error.message)
@@ -220,9 +222,11 @@ async function getTursoClient() {
 }
 
 // Initialize SQLite database schema
-async function initializeTursoSchema() {
+async function initializeTursoSchema(client = null) {
   try {
-    const client = await getTursoClient()
+    if (!client) {
+      client = await getTursoClient()
+    }
     if (!client) return
     
     // Create assets table if it doesn't exist
@@ -312,8 +316,11 @@ async function setAsset(assetId, data) {
     
     const client = await getTursoClient()
     if (!client) {
+      console.error(`❌ Turso client not available for asset ${assetId}`)
       throw new Error('Turso client not available')
     }
+    
+    console.log(`🔍 Executing SQL for asset ${assetId}`)
     
     // Insert or update the asset data
     await client.execute({
@@ -322,9 +329,10 @@ async function setAsset(assetId, data) {
       args: [assetId, data.predicted_asset_ids, data.matching_scores]
     })
     
-          console.log(`✅ Asset ${assetId} saved to SQLite`)
+    console.log(`✅ Asset ${assetId} saved to SQLite`)
   } catch (error) {
-          console.error(`❌ Failed to save asset ${assetId} to SQLite:`, error.message)
+    console.error(`❌ Failed to save asset ${assetId} to SQLite:`, error.message)
+    console.error(`❌ Error stack:`, error.stack)
     throw error
   }
 }
@@ -513,8 +521,10 @@ async function initializeDatabase() {
   console.log(`✅ Imported ${imported} records from CSV to Turso`)
 }
 
-// Initialize database on startup
-initializeDatabase()
+// Initialize database on startup (non-blocking)
+initializeDatabase().catch(error => {
+  console.error('Database initialization error:', error)
+})
 
 function parseArrayField(value) {
   if (Array.isArray(value)) return value
@@ -1242,6 +1252,8 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
         let chunkSkipped = 0
         let chunkErrors = 0
         
+        console.log(`🔍 Processing ${records.length} records in chunk ${chunkIndex + 1}`)
+        
         for (let i = 0; i < records.length; i++) {
           const record = records[i]
           const lineNumber = (chunkIndex * chunkSize) + i + 2 // +2 for header row and 0-based index
@@ -1273,12 +1285,45 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
             })
             chunkImported++
             
+            // Update progress more frequently (every 5 records for better granularity)
+            if (chunkImported % 5 === 0) {
+              // Update job progress more frequently
+              const currentTotalImported = totalImported + chunkImported
+              const currentTotalSkipped = totalSkipped + chunkSkipped
+              const currentTotalErrors = totalErrors + chunkErrors
+              const currentProcessed = Math.min((chunkIndex * chunkSize) + chunkImported + chunkSkipped + chunkErrors, totalRecords)
+              const currentProgress = Math.round((currentProcessed / totalRecords) * 100)
+              
+              await client.execute({
+                sql: `UPDATE import_jobs SET 
+                      processed = ?, 
+                      imported = ?, 
+                      skipped = ?, 
+                      errors = ?, 
+                      progress = ?, 
+                      updated_at = CURRENT_TIMESTAMP 
+                      WHERE job_id = ?`,
+                args: [
+                  currentProcessed,
+                  currentTotalImported,
+                  currentTotalSkipped,
+                  currentTotalErrors,
+                  currentProgress,
+                  jobId
+                ]
+              })
+              
+              // Add a smaller delay to make progress visible but not too slow
+              await new Promise(resolve => setTimeout(resolve, 50))
+            }
+            
           } catch (error) {
             chunkErrors++
             allErrorDetails.push({
               line: lineNumber,
               message: error.message
             })
+            console.error(`❌ Error processing record ${i} in chunk ${chunkIndex}:`, error.message)
           }
         }
         
@@ -1286,10 +1331,9 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
         totalSkipped += chunkSkipped
         totalErrors += chunkErrors
         
-        // Update job progress
-        const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100)
-        const processed = Math.min((chunkIndex + 1) * chunkSize, totalRecords)
-        console.log(`📊 Progress calculation: chunkIndex=${chunkIndex}, totalChunks=${totalChunks}, progress=${progress}%, processed=${processed}/${totalRecords}`)
+        // Force a final progress update for this chunk
+        const finalProcessed = Math.min((chunkIndex + 1) * chunkSize, totalRecords)
+        const finalProgress = Math.round((finalProcessed / totalRecords) * 100)
         
         await client.execute({
           sql: `UPDATE import_jobs SET 
@@ -1304,17 +1348,18 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
                 WHERE job_id = ?`,
           args: [
             chunkIndex === totalChunks - 1 ? 'completed' : 'processing',
-            processed,
+            finalProcessed,
             totalImported,
             totalSkipped,
             totalErrors,
             JSON.stringify(allErrorDetails),
-            progress,
+            finalProgress,
             jobId
           ]
         })
         
-        console.log(`📊 Updating job ${jobId} progress: ${progress}% (${processed}/${totalRecords} records)`)
+        // Add a small delay to ensure the update is captured
+        await new Promise(resolve => setTimeout(resolve, 100))
         
         // Clean up chunk data
         await client.execute({
@@ -1322,7 +1367,7 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
           args: [jobId, chunkIndex]
         })
         
-        console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} completed: ${chunkImported} imported, ${chunkSkipped} skipped, ${chunkErrors} errors`)
+
         
       } catch (chunkError) {
         console.error(`❌ Error processing chunk ${chunkIndex}:`, chunkError.message)
@@ -1330,7 +1375,7 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
       }
     }
     
-    console.log(`✅ Background processing completed for job ${jobId}: ${totalImported} imported, ${totalSkipped} skipped, ${totalErrors} errors`)
+
     
   } catch (error) {
     console.error(`❌ Background processing failed for job ${jobId}:`, error.message)
@@ -1386,8 +1431,7 @@ app.get('/api/import-status/:jobId', async (req, res) => {
       updatedAt: row.updated_at
     }
     
-    console.log(`📊 Job ${jobId} status:`, job)
-    console.log(`📊 Job ${jobId} returned status: ${job.status}, progress: ${job.progress}%, processed: ${job.processed}/${job.totalRecords}`)
+
     res.json(job)
     
   } catch (error) {
@@ -1396,14 +1440,83 @@ app.get('/api/import-status/:jobId', async (req, res) => {
   }
 })
 
+// List all import jobs endpoint
+app.get('/api/import-jobs', async (req, res) => {
+  try {
+    console.log('Listing all import jobs')
+    
+    const client = await getTursoClient()
+    if (!client) {
+      return res.status(500).json({ error: 'Turso client not available' })
+    }
+    
+    const result = await client.execute({
+      sql: 'SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT 10'
+    })
+    
+    const jobs = result.rows.map(row => ({
+      id: row.job_id,
+      status: row.status,
+      totalRecords: row.total_records,
+      processed: row.processed,
+      imported: row.imported,
+      skipped: row.skipped,
+      errors: row.errors,
+      progress: row.progress,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }))
+    
+    console.log(`📊 Found ${jobs.length} import jobs`)
+    res.json(jobs)
+    
+  } catch (error) {
+    console.error('Error listing import jobs:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // Simple test endpoint
-app.get('/api/test', (_req, res) => {
-     res.json({ 
-     ok: true, 
-          message: 'Server is working',
-     timestamp: new Date().toISOString(),
-     databaseType: 'turso'
-   })
+app.get('/api/test', async (_req, res) => {
+  try {
+    const client = await getTursoClient()
+    if (!client) {
+      return res.status(500).json({ error: 'Turso client not available' })
+    }
+    
+    // Test basic operations
+    await client.execute('SELECT 1 as test')
+    
+    // Check if tables exist
+    const tablesResult = await client.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    const tables = tablesResult.rows.map(row => row.name)
+    
+    // Count assets
+    const countResult = await client.execute('SELECT COUNT(*) as count FROM assets')
+    const assetCount = countResult.rows[0]?.count || 0
+    
+    // Get recent import jobs
+    const jobsResult = await client.execute('SELECT job_id, status, progress, total_records, processed FROM import_jobs ORDER BY created_at DESC LIMIT 5')
+    const importJobs = jobsResult.rows.map(row => ({
+      id: row.job_id,
+      status: row.status,
+      progress: row.progress,
+      totalRecords: row.total_records,
+      processed: row.processed
+    }))
+    
+    res.json({
+      status: 'ok',
+      message: 'Turso client is working',
+      tables: tables,
+      assetCount: assetCount,
+      importJobs: importJobs,
+      environment: process.env.TURSO_DATABASE_URL ? 'production' : 'local'
+    })
+  } catch (error) {
+    console.error('Test endpoint error:', error)
+    res.status(500).json({ error: error.message })
+  }
 })
 
 // Test asset storage
@@ -1691,48 +1804,48 @@ app.post('/api/import-database', async (req, res) => {
       sendProgress(40, 'Cleared existing data...')
     }
     
-         let imported = 0
-     let errors = 0
-     const errorDetails = []
+    let imported = 0
+    let errors = 0
+    const errorDetails = []
     
-         // Process records directly - no batching needed for SQLite
-     for (let i = 0; i < records.length; i++) {
-       const record = records[i]
-       const lineNumber = i + 1
-       const progress = 40 + Math.floor((i / records.length) * 50)
-       
-       sendProgress(progress, `Processing record ${i + 1}/${records.length}...`)
-       
-       try {
-         const assetId = String(record.asset_id ?? '').trim()
-         const predictedAssetIds = String(record.predicted_asset_ids ?? '')
-         const matchingScores = String(record.matching_scores ?? '')
-         
-         if (!assetId) {
-           errors++
-           errorDetails.push({
-             line: lineNumber,
-             message: 'Missing asset_id'
-           })
-           continue
-         }
-         
-         // Save directly to Turso
-         await setAsset(assetId, {
-           asset_id: assetId,
-           predicted_asset_ids: predictedAssetIds,
-           matching_scores: matchingScores
-         })
-         imported++
-         
-       } catch (error) {
-         errors++
-         errorDetails.push({
-           line: lineNumber,
-           message: error.message
-         })
-       }
-     }
+    // Process records directly - no batching needed for SQLite
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i]
+      const lineNumber = i + 1
+      const progress = 40 + Math.floor((i / records.length) * 50)
+      
+      sendProgress(progress, `Processing record ${i + 1}/${records.length}...`)
+      
+      try {
+        const assetId = String(record.asset_id ?? '').trim()
+        const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+        const matchingScores = String(record.matching_scores ?? '')
+        
+        if (!assetId) {
+          errors++
+          errorDetails.push({
+            line: lineNumber,
+            message: 'Missing asset_id'
+          })
+          continue
+        }
+        
+        // Save directly to Turso
+        await setAsset(assetId, {
+          asset_id: assetId,
+          predicted_asset_ids: predictedAssetIds,
+          matching_scores: matchingScores
+        })
+        imported++
+        
+      } catch (error) {
+        errors++
+        errorDetails.push({
+          line: lineNumber,
+          message: error.message
+        })
+      }
+    }
     
     sendProgress(90, 'Finalizing import...')
     
