@@ -190,32 +190,36 @@ async function getTursoClient() {
       const url = process.env.TURSO_DATABASE_URL
       const authToken = process.env.TURSO_AUTH_TOKEN
       
+      // For local development, use in-memory SQLite if no Turso URL is provided
       if (!url) {
-        console.error('❌ TURSO_DATABASE_URL environment variable is required')
-        return null
+        console.log('🔧 Local development detected - using in-memory SQLite')
+        tursoClient = createTursoClient({
+          url: 'file::memory:'
+        })
+      } else {
+        console.log('🌐 Production detected - using Turso SQLite')
+        tursoClient = createTursoClient({
+          url: url,
+          authToken: authToken
+        })
       }
-      
-      tursoClient = createTursoClient({
-        url: url,
-        authToken: authToken
-      })
       
       // Test the connection
       await tursoClient.execute('SELECT 1')
-      console.log('✅ Turso client connected')
+      console.log('✅ SQLite client connected')
       
       // Initialize the database schema
       await initializeTursoSchema()
       
     } catch (error) {
-      console.error('❌ Failed to initialize Turso client:', error.message)
+      console.error('❌ Failed to initialize SQLite client:', error.message)
       tursoClient = null
     }
   }
   return tursoClient
 }
 
-// Initialize Turso database schema
+// Initialize SQLite database schema
 async function initializeTursoSchema() {
   try {
     const client = await getTursoClient()
@@ -261,20 +265,20 @@ async function initializeTursoSchema() {
       )
     `)
     
-    console.log('✅ Turso database schema initialized')
+    console.log('✅ SQLite database schema initialized')
   } catch (error) {
-    console.error('❌ Failed to initialize Turso schema:', error.message)
+    console.error('❌ Failed to initialize SQLite schema:', error.message)
   }
 }
 
-// Asset storage functions using Turso SQLite
+// Asset storage functions using SQLite
 async function getAsset(assetId) {
   try {
-    console.log(`🔍 Getting asset ${assetId} from Turso`)
+    console.log(`🔍 Getting asset ${assetId} from SQLite`)
     
     const client = await getTursoClient()
     if (!client) {
-      console.log(`🔍 Turso client not available`)
+      console.log(`🔍 SQLite client not available`)
       return null
     }
     
@@ -304,7 +308,7 @@ async function getAsset(assetId) {
 
 async function setAsset(assetId, data) {
   try {
-    console.log(`🔍 setAsset called for ${assetId} - saving to Turso`)
+    console.log(`🔍 setAsset called for ${assetId} - saving to SQLite`)
     
     const client = await getTursoClient()
     if (!client) {
@@ -318,9 +322,9 @@ async function setAsset(assetId, data) {
       args: [assetId, data.predicted_asset_ids, data.matching_scores]
     })
     
-    console.log(`✅ Asset ${assetId} saved to Turso`)
+          console.log(`✅ Asset ${assetId} saved to SQLite`)
   } catch (error) {
-    console.error(`❌ Failed to save asset ${assetId} to Turso:`, error.message)
+          console.error(`❌ Failed to save asset ${assetId} to SQLite:`, error.message)
     throw error
   }
 }
