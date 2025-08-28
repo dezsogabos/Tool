@@ -617,19 +617,67 @@ async function getBatchFileIds(assetIds) {
     
     const hasStoredFileIds = dbCheck.rows[0].count > 0
     
-    if (hasStoredFileIds) {
-      console.log(`📦 Using database-stored file ID mappings`)
-      
-      // Look up file IDs for requested asset IDs from database
-      const result = {}
-      for (const assetId of assetIds) {
-        const fileId = await getCachedFileId(assetId)
-        result[assetId] = fileId
-      }
-      
-      console.log(`🔍 Database lookup completed: ${Object.values(result).filter(id => id !== null).length} file IDs found`)
-      return result
-    }
+         if (hasStoredFileIds) {
+       console.log(`📦 Using database-stored file ID mappings`)
+       
+       // Look up file IDs for requested asset IDs from database
+       const result = {}
+       const missingAssetIds = []
+       
+       for (const assetId of assetIds) {
+         const fileId = await getCachedFileId(assetId)
+         if (fileId) {
+           result[assetId] = fileId
+         } else {
+           missingAssetIds.push(assetId)
+         }
+       }
+       
+       console.log(`🔍 Database lookup completed: ${Object.values(result).filter(id => id !== null).length} file IDs found`)
+       
+       // If we have missing file IDs, fetch them from Google Drive
+       if (missingAssetIds.length > 0) {
+         console.log(`🔍 Fetching ${missingAssetIds.length} missing file IDs from Google Drive...`)
+         
+         // Fetch all files from Google Drive to get missing file IDs
+         const allFiles = []
+         let pageToken = null
+         
+         do {
+           const response = await drive.files.list({
+             q: `'${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`,
+             fields: 'files(id, name), nextPageToken',
+             pageSize: 1000,
+             pageToken: pageToken
+           })
+           
+           allFiles.push(...(response.data.files || []))
+           pageToken = response.data.nextPageToken
+         } while (pageToken)
+         
+         // Create a map of filename to file ID
+         const fileIdMap = {}
+         for (const file of allFiles) {
+           const nameWithoutExt = file.name.replace(/\.(jpg|jpeg|png|gif|bmp|webp)$/i, '')
+           fileIdMap[nameWithoutExt] = file.id
+         }
+         
+         // Look up missing file IDs and cache them
+         let cachedCount = 0
+         for (const assetId of missingAssetIds) {
+           const fileId = fileIdMap[assetId] || null
+           if (fileId) {
+             await setCachedFileId(assetId, fileId)
+             cachedCount++
+           }
+           result[assetId] = fileId
+         }
+         
+         console.log(`✅ Fetched and cached ${cachedCount} missing file IDs`)
+       }
+       
+       return result
+     }
     
     // No file IDs in database, fetch all from Google Drive and store permanently
     console.log(`🔄 No file IDs in database, fetching all files from Google Drive and storing permanently...`)
