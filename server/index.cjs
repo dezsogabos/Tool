@@ -235,10 +235,22 @@ async function initializeTursoSchema(client = null) {
         asset_id TEXT PRIMARY KEY,
         predicted_asset_ids TEXT,
         matching_scores TEXT,
+        file_ids TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `)
+    
+    // Add file_ids column if it doesn't exist (for existing databases)
+    try {
+      await client.execute(`
+        ALTER TABLE assets ADD COLUMN file_ids TEXT
+      `)
+      console.log('✅ Added file_ids column to assets table')
+    } catch (error) {
+      // Column already exists, ignore error
+      console.log('ℹ️ file_ids column already exists or could not be added')
+    }
     
     // Create import_jobs table for chunked imports
     await client.execute(`
@@ -287,7 +299,7 @@ async function getAsset(assetId) {
     }
     
     const result = await client.execute({
-      sql: 'SELECT asset_id, predicted_asset_ids, matching_scores FROM assets WHERE asset_id = ?',
+      sql: 'SELECT asset_id, predicted_asset_ids, matching_scores, file_ids FROM assets WHERE asset_id = ?',
       args: [assetId]
     })
     
@@ -296,7 +308,8 @@ async function getAsset(assetId) {
       const assetData = {
         asset_id: row.asset_id,
         predicted_asset_ids: row.predicted_asset_ids,
-        matching_scores: row.matching_scores
+        matching_scores: row.matching_scores,
+        file_ids: row.file_ids
       }
       console.log(`🔍 Asset ${assetId} retrieved from Turso`)
       return assetData
@@ -324,9 +337,9 @@ async function setAsset(assetId, data) {
     
     // Insert or update the asset data
     await client.execute({
-      sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, updated_at) 
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
-      args: [assetId, data.predicted_asset_ids, data.matching_scores]
+      sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, file_ids, updated_at) 
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      args: [assetId, data.predicted_asset_ids, data.matching_scores, data.file_ids]
     })
     
     console.log(`✅ Asset ${assetId} saved to SQLite`)
@@ -354,9 +367,9 @@ async function setAssetsBatch(assetsData) {
     for (const [assetId, data] of Object.entries(assetsData)) {
       try {
         await client.execute({
-          sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, updated_at) 
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
-          args: [assetId, data.predicted_asset_ids, data.matching_scores]
+          sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, file_ids, updated_at) 
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          args: [assetId, data.predicted_asset_ids, data.matching_scores, data.file_ids]
         })
         successful++
       } catch (error) {
@@ -421,7 +434,7 @@ async function getAllAssets() {
     }
     
     const result = await client.execute({
-      sql: 'SELECT asset_id, predicted_asset_ids, matching_scores FROM assets ORDER BY asset_id'
+      sql: 'SELECT asset_id, predicted_asset_ids, matching_scores, file_ids FROM assets ORDER BY asset_id'
     })
     
     const assets = {}
@@ -429,7 +442,8 @@ async function getAllAssets() {
       assets[row.asset_id] = {
         asset_id: row.asset_id,
         predicted_asset_ids: row.predicted_asset_ids,
-        matching_scores: row.matching_scores
+        matching_scores: row.matching_scores,
+        file_ids: row.file_ids
       }
     }
     
@@ -498,27 +512,63 @@ async function initializeDatabase() {
   const records = parse(content, { columns: true, skip_empty_lines: true })
   console.log('Parsed', records.length, 'records from CSV')
   
-  let imported = 0
+  console.log('🚀 Starting fast batch import (without Google Drive API calls)...')
   
+  // Use batch operations for much faster import
+  const client = await getTursoClient()
+  if (!client) {
+    console.error('❌ Turso client not available for batch import')
+    return
+  }
+  
+  // Prepare batch data
+  const batchData = []
   for (const record of records) {
     const assetId = String(record.asset_id ?? '').trim()
     if (assetId) {
-      try {
-        await setAsset(assetId, {
-          asset_id: assetId,
-          predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
-          matching_scores: String(record.matching_scores ?? '')
-        })
-        imported++
-      } catch (error) {
-        console.error(`Failed to import asset ${assetId}:`, error.message)
-      }
+      batchData.push({
+        asset_id: assetId,
+        predicted_asset_ids: String(record.predicted_asset_ids ?? ''),
+        matching_scores: String(record.matching_scores ?? ''),
+        file_ids: String(record.file_ids ?? '')
+      })
     }
   }
   
-  console.log(`Import result: ${imported} successful`)
+  console.log(`📦 Prepared ${batchData.length} records for batch import`)
   
-  console.log(`✅ Imported ${imported} records from CSV to Turso`)
+  // Use batch insert for much better performance
+  let imported = 0
+  const batchSize = 1000 // Process in batches of 1000
+  
+  for (let i = 0; i < batchData.length; i += batchSize) {
+    const batch = batchData.slice(i, i + batchSize)
+    console.log(`📦 Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(batchData.length / batchSize)} (${batch.length} records)`)
+    
+    try {
+      // Use a transaction for better performance
+      await client.execute('BEGIN TRANSACTION')
+      
+      for (const asset of batch) {
+        await client.execute({
+          sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, file_ids, updated_at) 
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          args: [asset.asset_id, asset.predicted_asset_ids, asset.matching_scores, asset.file_ids]
+        })
+      }
+      
+      await client.execute('COMMIT')
+      imported += batch.length
+      
+      console.log(`✅ Batch ${Math.floor(i / batchSize) + 1} completed: ${batch.length} records imported`)
+    } catch (error) {
+      await client.execute('ROLLBACK')
+      console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, error.message)
+    }
+  }
+  
+  console.log(`🎉 Fast import completed: ${imported} records imported successfully`)
+  console.log(`💡 Note: File IDs will be fetched on-demand when assets are accessed`)
 }
 
 // Initialize database on startup (non-blocking)
@@ -546,71 +596,348 @@ function parseArrayField(value) {
   }
 }
 
-async function getFileIdByAssetId(assetId) {
-  console.log(`🔍 getFileIdByAssetId called for assetId: ${assetId}`)
-  console.log(`🔍 ALL_DATASET_FOLDER_ID: ${ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET'}`)
-  if (ALL_DATASET_FOLDER_ID) {
-    console.log(`🔍 Folder ID value: ${ALL_DATASET_FOLDER_ID}`)
-  }
+// Batch file ID lookup for better performance
+async function getBatchFileIds(assetIds) {
+  console.log(`🔍 getBatchFileIds called for ${assetIds.length} assets`)
+  
   const drive = getDrive()
-  if (!drive) {
-    console.log(`❌ Google Drive not available for asset ${assetId}`)
+  if (!drive || !ALL_DATASET_FOLDER_ID) {
+    console.log(`❌ Google Drive not available for batch lookup`)
+    return {}
+  }
+  
+  try {
+    // Get all files in the folder at once
+    console.log(`🔍 Fetching all files from Google Drive folder...`)
+    const allFiles = []
+    let pageToken = null
+    
+    do {
+      const response = await drive.files.list({
+        q: `'${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`,
+        fields: 'files(id, name), nextPageToken',
+        pageSize: 1000,
+        pageToken: pageToken
+      })
+      
+      allFiles.push(...(response.data.files || []))
+      pageToken = response.data.nextPageToken
+    } while (pageToken)
+    
+    console.log(`🔍 Found ${allFiles.length} total files in Google Drive folder`)
+    
+    // Create a map of filename to file ID
+    const fileMap = {}
+    for (const file of allFiles) {
+      const nameWithoutExt = file.name.replace(/\.(jpg|jpeg|png|gif|bmp|webp)$/i, '')
+      fileMap[nameWithoutExt] = file.id
+    }
+    
+    // Look up file IDs for requested asset IDs
+    const result = {}
+    for (const assetId of assetIds) {
+      result[assetId] = fileMap[assetId] || null
+    }
+    
+    console.log(`🔍 Batch lookup completed: ${Object.values(result).filter(id => id !== null).length} file IDs found`)
+    return result
+    
+  } catch (error) {
+    console.error(`❌ Error in batch file ID lookup:`, error.message)
+    return {}
+  }
+}
+
+async function getFileIdByAssetId(assetId) {
+  // First, check if we have a cached file ID
+  const cachedFileId = await getCachedFileId(assetId)
+  if (cachedFileId) {
+    return cachedFileId
+  }
+  
+  const drive = getDrive()
+  if (!drive || !ALL_DATASET_FOLDER_ID) {
     return null
   }
   
-    try {
-      const fileName = `${assetId}.jpg`
-      const q = `name='${fileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
-      console.log(`🔍 Google Drive query: ${q}`)
-      console.log(`🔍 Attempting to list files in Google Drive...`)
-      const res = await drive.files.list({ q, fields: 'files(id, name)' })
-      console.log(`🔍 Google Drive API response received`)
-      const items = res.data.files || []
-      console.log(`🔍 Found ${items.length} files for asset ${assetId}`)
+  try {
+    const fileName = `${assetId}.jpg`
+    const q = `name='${fileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
+    const res = await drive.files.list({ q, fields: 'files(id, name)' })
+    const items = res.data.files || []
+    
     if (items.length > 0) {
-      console.log(`🔍 File ID: ${items[0].id}, Name: ${items[0].name}`)
-      return items[0].id
+      const fileId = items[0].id
+      
+      // Cache the file ID for future use (don't await to avoid blocking)
+      setCachedFileId(assetId, fileId).catch(error => {
+        console.warn(`Failed to cache file ID for ${assetId}:`, error.message)
+      })
+      
+      return fileId
     } else {
-      console.log(`❌ No file found for asset ${assetId} with name ${fileName}`)
-      
-      // Debug: Let's see what files are actually in the folder
-      console.log(`🔍 Debug: Checking what files exist in folder ${ALL_DATASET_FOLDER_ID}`)
-      try {
-        const debugRes = await drive.files.list({ 
-          q: `'${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`, 
-          fields: 'files(id, name)',
-          pageSize: 5
-        })
-        const debugItems = debugRes.data.files || []
-        console.log(`🔍 Debug: Found ${debugItems.length} total files in folder`)
-        if (debugItems.length > 0) {
-          console.log(`🔍 Debug: First few files:`, debugItems.slice(0, 3).map(f => `${f.name} (${f.id})`))
-        }
-      } catch (debugError) {
-        console.log(`🔍 Debug: Error listing folder contents:`, debugError.message)
-      }
-      
       // Try alternative file extensions
       const extensions = ['.jpeg', '.png', '.gif', '.bmp', '.webp']
       for (const ext of extensions) {
         const altFileName = `${assetId}${ext}`
         const altQ = `name='${altFileName}' and '${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`
-        console.log(`🔍 Trying alternative extension: ${altQ}`)
         const altRes = await drive.files.list({ q: altQ, fields: 'files(id, name)' })
         const altItems = altRes.data.files || []
         if (altItems.length > 0) {
-          console.log(`✅ Found file with alternative extension: ${altFileName} -> ${altItems[0].id}`)
-          return altItems[0].id
+          const fileId = altItems[0].id
+          
+          // Cache the file ID for future use (don't await to avoid blocking)
+          setCachedFileId(assetId, fileId).catch(error => {
+            console.warn(`Failed to cache file ID for ${assetId}:`, error.message)
+          })
+          
+          return fileId
         }
       }
-      console.log(`❌ No file found for asset ${assetId} with any common extension`)
     }
     return null
   } catch (error) {
-    console.error(`❌ Error getting file ID for asset ${assetId}:`, error.message)
+    console.error(`Error getting file ID for asset ${assetId}:`, error.message)
     return null
   }
 }
+
+// File ID caching and background processing functions
+function parseFileIds(fileIdsStr) {
+  if (!fileIdsStr) return {}
+  try {
+    return JSON.parse(fileIdsStr)
+  } catch (error) {
+    console.warn(`Failed to parse file_ids JSON: ${fileIdsStr}`, error.message)
+    return {}
+  }
+}
+
+function serializeFileIds(fileIdsObj) {
+  try {
+    return JSON.stringify(fileIdsObj)
+  } catch (error) {
+    console.warn('Failed to serialize file_ids object:', error.message)
+    return '{}'
+  }
+}
+
+async function getCachedFileId(assetId) {
+  try {
+    const client = await getTursoClient()
+    if (!client) return null
+    
+    const result = await client.execute({
+      sql: 'SELECT file_ids FROM assets WHERE asset_id = ?',
+      args: [assetId]
+    })
+    
+    if (result.rows.length > 0 && result.rows[0].file_ids) {
+      const fileIds = parseFileIds(result.rows[0].file_ids)
+      return fileIds[assetId] || null
+    }
+    return null
+  } catch (error) {
+    console.warn(`Failed to get cached file ID for ${assetId}:`, error.message)
+    return null
+  }
+}
+
+async function setCachedFileId(assetId, fileId) {
+  try {
+    const client = await getTursoClient()
+    if (!client) return false
+    
+    // Get existing file_ids
+    const result = await client.execute({
+      sql: 'SELECT file_ids FROM assets WHERE asset_id = ?',
+      args: [assetId]
+    })
+    
+    let fileIds = {}
+    if (result.rows.length > 0 && result.rows[0].file_ids) {
+      fileIds = parseFileIds(result.rows[0].file_ids)
+    }
+    
+    // Update the file ID for this asset
+    fileIds[assetId] = fileId
+    
+    // Save back to database
+    await client.execute({
+      sql: 'UPDATE assets SET file_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE asset_id = ?',
+      args: [serializeFileIds(fileIds), assetId]
+    })
+    
+    console.log(`✅ Cached file ID for asset ${assetId}: ${fileId}`)
+    return true
+  } catch (error) {
+    console.error(`Failed to cache file ID for ${assetId}:`, error.message)
+    return false
+  }
+}
+
+async function getAssetsMissingFileIds(limit = 100) {
+  try {
+    const client = await getTursoClient()
+    if (!client) return []
+    
+    const result = await client.execute({
+      sql: `SELECT asset_id FROM assets 
+            WHERE file_ids IS NULL OR file_ids = '' OR file_ids = '{}'
+            ORDER BY updated_at ASC
+            LIMIT ?`,
+      args: [limit]
+    })
+    
+    return result.rows.map(row => row.asset_id)
+  } catch (error) {
+    console.error('Failed to get assets missing file IDs:', error.message)
+    return []
+  }
+}
+
+// Background process to populate missing file IDs
+let backgroundProcessRunning = false
+let backgroundProcessInterval = null
+
+async function startBackgroundFileIdPopulation() {
+  if (backgroundProcessRunning) {
+    console.log('🔄 Background file ID population already running')
+    return
+  }
+  
+  console.log('🚀 Starting background file ID population process')
+  backgroundProcessRunning = true
+  
+  // Run immediately but don't block server startup
+  populateMissingFileIds().catch(error => {
+    console.warn('⚠️ Background file ID population failed:', error.message)
+  })
+  
+  // Then run every 15 minutes (less frequent to reduce interference)
+  backgroundProcessInterval = setInterval(async () => {
+    if (!backgroundProcessRunning) return
+    try {
+      await populateMissingFileIds()
+    } catch (error) {
+      console.warn('⚠️ Background file ID population failed:', error.message)
+    }
+  }, 15 * 60 * 1000) // 15 minutes
+}
+
+async function stopBackgroundFileIdPopulation() {
+  console.log('⏹️ Stopping background file ID population process')
+  backgroundProcessRunning = false
+  if (backgroundProcessInterval) {
+    clearInterval(backgroundProcessInterval)
+    backgroundProcessInterval = null
+  }
+}
+
+async function populateMissingFileIds() {
+  try {
+    console.log('🔄 Starting file ID population batch...')
+    
+    const drive = getDrive()
+    if (!drive || !ALL_DATASET_FOLDER_ID) {
+      console.log('⚠️ Google Drive not available for file ID population')
+      return
+    }
+    
+    // Get assets missing file IDs (smaller batch to reduce interference)
+    const assetIds = await getAssetsMissingFileIds(20) // Process 20 at a time
+    if (assetIds.length === 0) {
+      console.log('✅ No assets missing file IDs')
+      return
+    }
+    
+    console.log(`🔄 Processing ${assetIds.length} assets for file ID population`)
+    
+    // Use batch lookup for efficiency
+    const fileIdMap = await getBatchFileIds(assetIds)
+    
+    // Cache the results
+    let cachedCount = 0
+    for (const assetId of assetIds) {
+      const fileId = fileIdMap[assetId]
+      if (fileId) {
+        await setCachedFileId(assetId, fileId)
+        cachedCount++
+      }
+    }
+    
+    console.log(`✅ File ID population completed: ${cachedCount}/${assetIds.length} file IDs cached`)
+    
+  } catch (error) {
+    console.error('❌ Error in file ID population:', error.message)
+  }
+}
+
+// API endpoint to manually trigger file ID population
+app.post('/api/populate-file-ids', async (req, res) => {
+  try {
+    console.log('🔄 Manual file ID population requested')
+    
+    const { batchSize = 50 } = req.body || {}
+    
+    // Start the background process if not already running
+    if (!backgroundProcessRunning) {
+      startBackgroundFileIdPopulation()
+    }
+    
+    res.json({ 
+      ok: true, 
+      message: 'File ID population started',
+      batchSize: parseInt(batchSize)
+    })
+  } catch (error) {
+    console.error('❌ Error starting file ID population:', error.message)
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    })
+  }
+})
+
+// API endpoint to check background process status
+app.get('/api/background-status', async (req, res) => {
+  try {
+    const missingCount = await getAssetsMissingFileIds(1000) // Get count of missing file IDs
+    
+    res.json({
+      ok: true,
+      backgroundProcessRunning,
+      missingFileIds: missingCount.length,
+      message: backgroundProcessRunning ? 'Background process is running' : 'Background process is stopped'
+    })
+  } catch (error) {
+    console.error('❌ Error getting background status:', error.message)
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    })
+  }
+})
+
+// API endpoint to stop background process
+app.post('/api/stop-background-process', async (req, res) => {
+  try {
+    console.log('⏹️ Manual background process stop requested')
+    
+    await stopBackgroundFileIdPopulation()
+    
+    res.json({ 
+      ok: true, 
+      message: 'Background process stopped'
+    })
+  } catch (error) {
+    console.error('❌ Error stopping background process:', error.message)
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    })
+  }
+})
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -749,41 +1076,64 @@ app.post('/api/login', (req, res) => {
 app.get('/api/assets/:assetId', async (req, res) => {
   try {
     const searchId = String(req.params.assetId).trim()
+    const { includeFileIds = 'true', offline } = req.query // Allow skipping file ID lookup and check offline mode
+    
     if (!searchId) return res.status(400).json({ error: 'assetId required' })
 
-                 // Get asset from Turso
-      const assetData = await getAsset(searchId)
-      
-      if (!assetData) {
-        console.log(`🔍 Asset ${searchId} not found in Turso`)
-       return res.json({ 
-         assetId: searchId, 
-         reference: { fileId: null },
-         predicted: []
-       })
-     }
+    // Get asset from Turso
+    const assetData = await getAsset(searchId)
+    
+    if (!assetData) {
+      console.log(`🔍 Asset ${searchId} not found in Turso`)
+      return res.json({ 
+        assetId: searchId, 
+        reference: { fileId: null },
+        predicted: []
+      })
+    }
     
     const predictedIds = parseArrayField(assetData.predicted_asset_ids).map(String)
     const predictedScores = parseArrayField(assetData.matching_scores).map(s => Number(s))
 
-    // Only try to get Google Drive file IDs if ALL_DATASET_FOLDER_ID is properly configured
+    // Only try to get Google Drive file IDs if requested and configured
     let referenceFileId = null
     let predicted = []
     
-    console.log(`🔍 Processing asset ${searchId} - ALL_DATASET_FOLDER_ID: ${ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET'}`)
+    console.log(`🔍 Processing asset ${searchId} - includeFileIds: ${includeFileIds}, offline: ${offline}, ALL_DATASET_FOLDER_ID: ${ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET'}`)
     
-    if (ALL_DATASET_FOLDER_ID) {
+    // In offline mode, skip Google API calls entirely
+    if (offline === 'true') {
+      console.log(`🔍 Offline mode - skipping Google API calls for asset ${searchId}`)
+      for (let i = 0; i < predictedIds.length; i += 1) {
+        const pid = String(predictedIds[i])
+        const score = typeof predictedScores[i] === 'number' ? predictedScores[i] : null
+        predicted.push({ id: pid, score, fileId: null })
+      }
+    } else if (includeFileIds === 'true' && ALL_DATASET_FOLDER_ID) {
       try {
         console.log(`🔍 Attempting to get reference file ID for asset ${searchId}`)
-        console.log(`🔍 Using folder ID: ${ALL_DATASET_FOLDER_ID}`)
         referenceFileId = await getFileIdByAssetId(searchId)
         console.log(`🔍 Reference file ID result for ${searchId}: ${referenceFileId}`)
         
-        for (let i = 0; i < predictedIds.length; i += 1) {
-          const pid = String(predictedIds[i])
-          const score = typeof predictedScores[i] === 'number' ? predictedScores[i] : null
-          const fileId = await getFileIdByAssetId(pid)
-          predicted.push({ id: pid, score, fileId })
+        // Use batch lookup for predicted assets if there are many (only in online mode)
+        if (predictedIds.length > 5) {
+          console.log(`🔍 Using batch lookup for ${predictedIds.length} predicted assets`)
+          const fileIdMap = await getBatchFileIds(predictedIds)
+          
+          for (let i = 0; i < predictedIds.length; i += 1) {
+            const pid = String(predictedIds[i])
+            const score = typeof predictedScores[i] === 'number' ? predictedScores[i] : null
+            const fileId = fileIdMap[pid] || null
+            predicted.push({ id: pid, score, fileId })
+          }
+        } else {
+          // For small numbers, use individual lookups
+          for (let i = 0; i < predictedIds.length; i += 1) {
+            const pid = String(predictedIds[i])
+            const score = typeof predictedScores[i] === 'number' ? predictedScores[i] : null
+            const fileId = await getFileIdByAssetId(pid)
+            predicted.push({ id: pid, score, fileId })
+          }
         }
       } catch (driveError) {
         console.warn('Google Drive API error, continuing without file IDs:', driveError.message)
@@ -796,8 +1146,8 @@ app.get('/api/assets/:assetId', async (req, res) => {
         }
       }
     } else {
-      console.log(`🔍 ALL_DATASET_FOLDER_ID not set, running in offline mode`)
-      // Offline mode - just return the asset data without file IDs
+      console.log(`🔍 Skipping file ID lookup - includeFileIds: ${includeFileIds}, ALL_DATASET_FOLDER_ID: ${ALL_DATASET_FOLDER_ID ? 'SET' : 'NOT SET'}`)
+      // Skip file ID lookup for faster response
       for (let i = 0; i < predictedIds.length; i += 1) {
         const pid = String(predictedIds[i])
         const score = typeof predictedScores[i] === 'number' ? predictedScores[i] : null
@@ -821,9 +1171,28 @@ app.get('/api/assets/:assetId', async (req, res) => {
 app.get('/api/images/:fileId', async (req, res) => {
   try {
     const { fileId } = req.params
+    const { offline } = req.query // Check for offline mode parameter
+    
     if (!fileId) return res.status(400).send('fileId required')
     
-    console.log(`🖼️ Image request for fileId: ${fileId}`)
+    console.log(`🖼️ Image request for fileId: ${fileId}${offline ? ' (offline mode)' : ''}`)
+    
+    // If offline mode is requested, avoid Google API calls
+    if (offline === 'true') {
+      console.log(`🔍 Offline mode requested for fileId: ${fileId} - avoiding Google API call`)
+      const placeholderSvg = `<svg width="200" height="200" xmlns="http://www.w3.org/2000/svg">
+        <rect width="200" height="200" fill="#f0f0f0"/>
+        <text x="100" y="100" text-anchor="middle" dy=".3em" font-family="Arial" font-size="14" fill="#666">
+          Offline Mode
+        </text>
+        <text x="100" y="120" text-anchor="middle" dy=".3em" font-family="Arial" font-size="10" fill="#999">
+          Use local images instead
+        </text>
+      </svg>`
+      
+      res.setHeader('Content-Type', 'image/svg+xml')
+      return res.send(placeholderSvg)
+    }
     
     const drive = getDrive()
     if (!drive) {
@@ -1133,46 +1502,108 @@ app.post('/api/import-csv', async (req, res) => {
       let errors = 0
       const errorDetails = []
       
-      // Process records directly - no batching needed for SQLite
-      for (let i = 0; i < records.length; i++) {
-        const record = records[i]
-        const lineNumber = i + 2 // +2 for header row and 0-based index
-        
-        try {
-          const assetId = String(record.asset_id ?? '').trim()
-          const predictedAssetIds = String(record.predicted_asset_ids ?? '')
-          const matchingScores = String(record.matching_scores ?? '')
-          
-          if (!assetId) {
-            skipped++
-            continue
-          }
-          
-          // Check for duplicates if skipDuplicates is enabled
-          if (options.skipDuplicates) {
-            const existing = await getAsset(assetId)
-            if (existing) {
-              skipped++
-              continue
-            }
-          }
-          
-          // Save directly to Turso
-          await setAsset(assetId, {
-            asset_id: assetId,
-            predicted_asset_ids: predictedAssetIds,
-            matching_scores: matchingScores
-          })
-          imported++
-          
-        } catch (error) {
-          errors++
-          errorDetails.push({
-            line: lineNumber,
-            message: error.message
-          })
-        }
-      }
+             // Use fast batch processing for better performance
+       const batchSize = 1000
+       const validRecords = []
+       
+       // First pass: validate and prepare records
+       for (let i = 0; i < records.length; i++) {
+         const record = records[i]
+         const lineNumber = i + 2 // +2 for header row and 0-based index
+         
+         try {
+           const assetId = String(record.asset_id ?? '').trim()
+           const predictedAssetIds = String(record.predicted_asset_ids ?? '')
+           const matchingScores = String(record.matching_scores ?? '')
+           const fileIds = String(record.file_ids ?? '')
+           
+           if (!assetId) {
+             skipped++
+             continue
+           }
+           
+           validRecords.push({
+             assetId,
+             predictedAssetIds,
+             matchingScores,
+             fileIds,
+             lineNumber
+           })
+           
+         } catch (error) {
+           errors++
+           errorDetails.push({
+             line: lineNumber,
+             message: error.message
+           })
+         }
+       }
+       
+       console.log(`📦 Processing ${validRecords.length} valid records in batches...`)
+       
+       // Second pass: batch insert
+       for (let i = 0; i < validRecords.length; i += batchSize) {
+         const batch = validRecords.slice(i, i + batchSize)
+         console.log(`📦 Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(validRecords.length / batchSize)} (${batch.length} records)`)
+         
+         try {
+           // Use transaction for better performance
+           await client.execute('BEGIN TRANSACTION')
+           
+           for (const record of batch) {
+             // Check for duplicates if skipDuplicates is enabled
+             if (options.skipDuplicates) {
+               const existing = await getAsset(record.assetId)
+               if (existing) {
+                 skipped++
+                 continue
+               }
+             }
+             
+             // Save to Turso
+             await client.execute({
+               sql: `INSERT OR REPLACE INTO assets (asset_id, predicted_asset_ids, matching_scores, file_ids, updated_at) 
+                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+               args: [record.assetId, record.predictedAssetIds, record.matchingScores, record.fileIds]
+             })
+             imported++
+           }
+           
+           await client.execute('COMMIT')
+           console.log(`✅ Batch ${Math.floor(i / batchSize) + 1} completed: ${batch.length} records processed`)
+           
+         } catch (error) {
+           await client.execute('ROLLBACK')
+           console.error(`❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, error.message)
+           
+           // Fall back to individual processing for this batch
+           for (const record of batch) {
+             try {
+               if (options.skipDuplicates) {
+                 const existing = await getAsset(record.assetId)
+                 if (existing) {
+                   skipped++
+                   continue
+                 }
+               }
+               
+               await setAsset(record.assetId, {
+                 asset_id: record.assetId,
+                 predicted_asset_ids: record.predictedAssetIds,
+                 matching_scores: record.matchingScores,
+                 file_ids: record.fileIds
+               })
+               imported++
+             } catch (fallbackError) {
+               errors++
+               errorDetails.push({
+                 line: record.lineNumber,
+                 message: fallbackError.message
+               })
+             }
+           }
+         }
+       }
       
       const result = {
         totalRecords: records.length,
@@ -1262,6 +1693,7 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
             const assetId = String(record.asset_id ?? '').trim()
             const predictedAssetIds = String(record.predicted_asset_ids ?? '')
             const matchingScores = String(record.matching_scores ?? '')
+            const fileIds = String(record.file_ids ?? '')
             
             if (!assetId) {
               chunkSkipped++
@@ -1281,7 +1713,8 @@ async function processImportChunks(jobId, totalChunks, chunkSize, totalRecords, 
             await setAsset(assetId, {
               asset_id: assetId,
               predicted_asset_ids: predictedAssetIds,
-              matching_scores: matchingScores
+              matching_scores: matchingScores,
+              file_ids: fileIds
             })
             chunkImported++
             
@@ -1526,7 +1959,8 @@ app.get('/api/test-asset-storage', async (_req, res) => {
     const testAssetData = {
       asset_id: testAssetId,
       predicted_asset_ids: '[123, 456, 789]',
-      matching_scores: '[0.95, 0.87, 0.76]'
+      matching_scores: '[0.95, 0.87, 0.76]',
+      file_ids: '[123, 456, 789]'
     }
     
     console.log('🧪 Testing asset storage...')
@@ -1820,6 +2254,7 @@ app.post('/api/import-database', async (req, res) => {
         const assetId = String(record.asset_id ?? '').trim()
         const predictedAssetIds = String(record.predicted_asset_ids ?? '')
         const matchingScores = String(record.matching_scores ?? '')
+        const fileIds = String(record.file_ids ?? '')
         
         if (!assetId) {
           errors++
@@ -1834,7 +2269,8 @@ app.post('/api/import-database', async (req, res) => {
         await setAsset(assetId, {
           asset_id: assetId,
           predicted_asset_ids: predictedAssetIds,
-          matching_scores: matchingScores
+          matching_scores: matchingScores,
+          file_ids: fileIds
         })
         imported++
         
@@ -1880,14 +2316,92 @@ app.post('/api/import-database', async (req, res) => {
   }
 })
 
+// Fast asset endpoint without file ID lookup
+app.get('/api/assets-fast/:assetId', async (req, res) => {
+  try {
+    const searchId = String(req.params.assetId).trim()
+    
+    if (!searchId) return res.status(400).json({ error: 'assetId required' })
+
+    // Get asset from Turso only
+    const assetData = await getAsset(searchId)
+    
+    if (!assetData) {
+      console.log(`🔍 Asset ${searchId} not found in Turso`)
+      return res.json({ 
+        assetId: searchId, 
+        reference: { fileId: null },
+        predicted: []
+      })
+    }
+    
+    const predictedIds = parseArrayField(assetData.predicted_asset_ids).map(String)
+    const predictedScores = parseArrayField(assetData.matching_scores).map(s => Number(s))
+
+    // Skip file ID lookup for maximum speed
+    const predicted = predictedIds.map((pid, i) => ({
+      id: pid,
+      score: typeof predictedScores[i] === 'number' ? predictedScores[i] : null,
+      fileId: null
+    }))
+
+    const response = {
+      assetId: searchId,
+      reference: { fileId: null },
+      predicted,
+    }
+    
+    console.log(`⚡ Fast API response for asset ${searchId} (no file IDs)`)
+    res.json(response)
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Endpoint to retrieve fileId for a specific asset (for fallback scenarios)
+app.get('/api/file-id/:assetId', async (req, res) => {
+  try {
+    const assetId = String(req.params.assetId).trim()
+    
+    if (!assetId) return res.status(400).json({ error: 'assetId required' })
+    
+    if (!ALL_DATASET_FOLDER_ID) {
+      return res.status(400).json({ error: 'Google Drive API not configured' })
+    }
+    
+    console.log(`🔍 Retrieving fileId for asset ${assetId}`)
+    const fileId = await getFileIdByAssetId(assetId)
+    
+    res.json({ 
+      assetId, 
+      fileId,
+      success: !!fileId
+    })
+  } catch (e) {
+    console.error(`Error retrieving fileId for asset ${req.params.assetId}:`, e)
+    res.status(500).json({ 
+      error: e.message,
+      assetId: req.params.assetId,
+      fileId: null,
+      success: false
+    })
+  }
+})
+
 // For Vercel serverless deployment
 if (process.env.NODE_ENV === 'production') {
   // Export for Vercel serverless functions
   module.exports = app
 } else {
   // Local development server
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`API server listening on http://localhost:${PORT}`)
+    
+    // Don't start background process automatically to avoid performance issues
+    // Users can manually start it via the UI if needed
+    console.log('ℹ️ Background file ID population is disabled by default for better performance')
+    console.log('ℹ️ Use the UI to manually start the background process if needed')
   })
 }
 

@@ -268,7 +268,13 @@ function handleSearch() {
   // If not in cache, fetch from API
   console.log(`🌐 Starting API fetch for asset: ${currentAssetId}`)
   loading.value = true
-  fetch(`/api/assets/${encodeURIComponent(currentAssetId)}`)
+  
+  // Add offline parameter if in offline mode
+  const offlineParam = offlineMode.value ? '?offline=true' : ''
+  const apiEndpoint = `/api/assets/${encodeURIComponent(currentAssetId)}${offlineParam}`
+  console.log(`🌐 Using API endpoint: ${apiEndpoint}`)
+  
+  fetch(apiEndpoint)
     .then(async (r) => {
       if (!r.ok) {
         let message = 'Failed to search'
@@ -1715,15 +1721,26 @@ async function prefetchAsset(assetId) {
   
   try {
     console.log(`🚀 Pre-fetching asset: ${assetId}`)
-    const response = await fetch(`/api/assets/${encodeURIComponent(assetId)}`)
+    
+    // In offline mode, use fast endpoint to avoid Google API calls
+    // In online mode, use regular endpoint for full data including file IDs
+    const baseEndpoint = offlineMode.value ? 
+      `/api/assets-fast/${encodeURIComponent(assetId)}` : 
+      `/api/assets/${encodeURIComponent(assetId)}`
+    
+    // Add offline parameter if in offline mode
+    const offlineParam = offlineMode.value ? '?offline=true' : ''
+    const endpoint = baseEndpoint + offlineParam
+    
+    const response = await fetch(endpoint)
     if (response.ok) {
       const data = await response.json()
       setCachedAsset(assetId, data)
       prefetchedAssets.value.add(assetId)
-      console.log(`✅ Pre-fetched asset: ${assetId}`)
+      console.log(`✅ Pre-fetched asset: ${assetId} (${offlineMode.value ? 'offline' : 'online'} mode)`)
       
-      // Only pre-load reference image, skip predicted images to reduce load
-      if (data.reference?.fileId) {
+      // Only pre-load reference image in online mode, skip in offline mode
+      if (!offlineMode.value && data.reference?.fileId) {
         try {
           const referenceAssetId = data.reference.assetId || assetId
           const referenceUrl = getImageUrl(data.reference.fileId, referenceAssetId)
@@ -2000,18 +2017,19 @@ function getImageUrl(fileId, assetId = null) {
   
   let url
   if (offlineMode.value && localImagePath.value) {
-    // For offline mode, use the provided assetId as the filename
+    // For offline mode, always prioritize local file system
     const filename = assetId || fileId
     
     // Validate that we have a proper assetId for local file lookup
     if (!assetId) {
-      console.warn(`⚠️ No assetId provided for local file lookup, falling back to API for fileId: ${fileId}`)
-      url = `/api/images/${fileId}`
+      console.warn(`⚠️ No assetId provided for local file lookup, using placeholder for fileId: ${fileId}`)
+      // Return a placeholder URL that will trigger error handling
+      url = `/api/images/${fileId}?offline=true`
     } else {
       url = `/api/local-images/${encodeURIComponent(filename)}?path=${encodeURIComponent(localImagePath.value)}`
     }
   } else {
-    // Fall back to online Google Drive API
+    // Online mode - use Google Drive API
     url = `/api/images/${fileId}`
   }
   
@@ -2025,7 +2043,13 @@ function getImageUrl(fileId, assetId = null) {
 // Computed properties for reactive image sources
 const referenceImageSource = computed(() => {
   const fileId = referenceFileId.value
-  if (!fileId) return 'api'
+  if (!fileId) {
+    // In offline mode with local path, use assetId as key
+    if (offlineMode.value && localImagePath.value) {
+      return imageActualSources.value[assetId.value] || 'api'
+    }
+    return 'api'
+  }
   
   return imageActualSources.value[fileId] || 'api'
 })
@@ -2033,22 +2057,39 @@ const referenceImageSource = computed(() => {
 const predictedImageSources = computed(() => {
   return predicted.value.map(p => ({
     fileId: p.fileId,
-    source: imageActualSources.value[p.fileId] || 'api'
+    source: imageActualSources.value[p.fileId || p.id] || 'api'
   }))
 })
 
 const previewImageSource = computed(() => {
   if (!previewImage.value) return 'api'
-  return imageActualSources.value[previewImage.value.fileId] || 'api'
+  const fileId = previewImage.value.fileId
+  if (!fileId) {
+    // In offline mode with local path, use assetId as key
+    if (offlineMode.value && localImagePath.value) {
+      return imageActualSources.value[previewImage.value.id] || 'api'
+    }
+    return 'api'
+  }
+  return imageActualSources.value[fileId] || 'api'
 })
 
 // Computed properties for image URLs to prevent infinite loops
 const referenceImageUrl = computed(() => {
   console.log(`🔍 referenceImageUrl computed - referenceFileId: "${referenceFileId.value}", offlineMode: ${offlineMode.value}, localImagePath: "${localImagePath.value}"`)
   
-  // Check if referenceFileId is empty, null, or undefined
+  // In offline mode, we can still show local images even if fileId is null
+  if (offlineMode.value && localImagePath.value) {
+    // For local images, use the current assetId (not the fileId)
+    const filename = assetId.value
+    const url = `/api/local-images/${encodeURIComponent(filename)}?path=${encodeURIComponent(localImagePath.value)}`
+    console.log(`🔍 Generated LOCAL URL for offline mode: ${url}`)
+    return url
+  }
+  
+  // Check if referenceFileId is empty, null, or undefined (only for online mode)
   if (!referenceFileId.value || referenceFileId.value === null || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
-    console.log(`🔍 No valid referenceFileId, returning empty string`)
+    console.log(`🔍 No valid referenceFileId for online mode, returning empty string`)
     return ''
   }
   
@@ -2062,14 +2103,8 @@ const referenceImageUrl = computed(() => {
   }
   
   // Generate URL without calling getImageUrl to prevent infinite loop
-  let url = ''
-  if (offlineMode.value && localImagePath.value) {
-    url = `/api/local-images/${referenceFileId.value}?path=${encodeURIComponent(localImagePath.value)}`
-    console.log(`🔍 Generated LOCAL URL: ${url}`)
-  } else {
-    url = `/api/images/${referenceFileId.value}`
-    console.log(`🔍 Generated API URL: ${url}`)
-  }
+  const url = `/api/images/${referenceFileId.value}`
+  console.log(`🔍 Generated API URL: ${url}`)
   
   // Cache the URL
   imageUrlCache.value.set(cacheKey, {
@@ -2080,8 +2115,34 @@ const referenceImageUrl = computed(() => {
   return url
 })
 
+// Filter out reference image from predicted images
+const filteredPredicted = computed(() => {
+  return predicted.value.filter(p => p.id !== assetId.value)
+})
+
 const predictedImageUrls = computed(() => {
-  return predicted.value.map(p => {
+  return filteredPredicted.value.map(p => {
+    // In offline mode, if fileId is null but we have localImagePath, generate local URL using assetId
+    if (!p.fileId && offlineMode.value && localImagePath.value) {
+      const cacheKey = `${p.id}_local_${localImagePath.value}`
+      const cached = imageUrlCache.value.get(cacheKey)
+      if (cached) {
+        console.log(`🖼️ Cache HIT for local image: ${p.id} (key: ${cacheKey})`)
+        return { id: p.id, fileId: p.fileId, url: cached.url }
+      }
+      
+      const url = `/api/local-images/${encodeURIComponent(p.id)}?path=${encodeURIComponent(localImagePath.value)}`
+      
+      // Cache the URL
+      imageUrlCache.value.set(cacheKey, {
+        url: url,
+        timestamp: Date.now()
+      })
+      console.log(`🖼️ Cache MISS for local image: ${p.id} (key: ${cacheKey}) - Generated: ${url}`)
+      return { id: p.id, fileId: p.fileId, url }
+    }
+    
+    // If no fileId and not in offline mode with local path, return empty URL
     if (!p.fileId) return { id: p.id, fileId: p.fileId, url: '' }
     
     const cacheKey = `${p.fileId}_${offlineMode.value ? 'offline' : 'online'}_${localImagePath.value || 'none'}`
@@ -2094,9 +2155,12 @@ const predictedImageUrls = computed(() => {
     // Generate URL without calling getImageUrl to prevent infinite loop
     let url = ''
     if (offlineMode.value && localImagePath.value) {
-      url = `/api/local-images/${p.fileId}?path=${encodeURIComponent(localImagePath.value)}`
+      // For local images, use the assetId (p.id) instead of fileId
+      url = `/api/local-images/${encodeURIComponent(p.id)}?path=${encodeURIComponent(localImagePath.value)}`
     } else {
-      url = `/api/images/${p.fileId}`
+      // Add offline mode parameter to avoid unnecessary Google API calls
+      const offlineParam = offlineMode.value ? '?offline=true' : ''
+      url = `/api/images/${p.fileId}${offlineParam}`
     }
     
     // Cache the URL
@@ -2121,9 +2185,12 @@ const previewImageUrl = computed(() => {
   // Generate URL without calling getImageUrl to prevent infinite loop
   let url = ''
   if (offlineMode.value && localImagePath.value) {
-    url = `/api/local-images/${previewImage.value.fileId}?path=${encodeURIComponent(localImagePath.value)}`
+    // For local images, use the assetId (previewImage.value.id) instead of fileId
+    url = `/api/local-images/${encodeURIComponent(previewImage.value.id)}?path=${encodeURIComponent(localImagePath.value)}`
   } else {
-    url = `/api/images/${previewImage.value.fileId}`
+    // Add offline mode parameter to avoid unnecessary Google API calls
+    const offlineParam = offlineMode.value ? '?offline=true' : ''
+    url = `/api/images/${previewImage.value.fileId}${offlineParam}`
   }
   
   // Cache the URL
@@ -2155,31 +2222,121 @@ function handleImageLoad(event, fileId, assetId = null) {
     console.log(`⚠️ Unknown URL pattern: ${event.target.src}`)
   }
   
-  // Update the actual source
-  updateImageSource(fileId, actualSource)
-  console.log(`✅ Set actual source to: ${actualSource} for fileId: ${fileId}`)
-  console.log(`✅ Current imageActualSources[${fileId}]: ${imageActualSources.value[fileId]}`)
+  // Update the actual source - use assetId as key if fileId is null (for offline mode)
+  const sourceKey = fileId || assetId
+  if (sourceKey) {
+    updateImageSource(sourceKey, actualSource)
+    console.log(`✅ Set actual source to: ${actualSource} for key: ${sourceKey}`)
+    console.log(`✅ Current imageActualSources[${sourceKey}]: ${imageActualSources.value[sourceKey]}`)
+  } else {
+    console.log(`⚠️ No key available for updating image source`)
+  }
 }
 
-function handleImageError(event, fileId, assetId = null) {
+async function handleImageError(event, fileId, assetId = null) {
   console.log(`❌ Image error for file ${fileId}`)
   console.log(`❌ Current src that failed: ${event.target.src}`)
   console.log(`❌ assetId: ${assetId}`)
   console.log(`❌ offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
   
-  // If we're in offline mode and the local image failed, try online
-  if (offlineMode.value && localImagePath.value && event.target.src.includes('/api/local-images/')) {
-    console.log(`🔄 Local image failed for file ${fileId}, falling back to online`)
-    
-    event.target.src = `/api/images/${fileId}`
-    console.log(`🔄 Set new src: /api/images/${fileId}`)
-    // Don't update source here - let handleImageLoad set it when the API image loads successfully
+  // In offline mode, check local file system first, then fall back to Google Drive if not found
+  if (offlineMode.value && localImagePath.value) {
+    if (event.target.src.includes('/api/local-images/')) {
+      // Local image failed in offline mode - now fall back to Google Drive
+      console.log(`🔄 Local image failed for file ${fileId} in offline mode, falling back to Google Drive`)
+      
+      // If fileId is null, try to retrieve it from Google Drive
+      let actualFileId = fileId
+      if (!actualFileId && assetId) {
+        try {
+          console.log(`🔍 Retrieving fileId for asset ${assetId} from Google Drive`)
+          const response = await fetch(`/api/file-id/${assetId}`)
+          const data = await response.json()
+          if (data.success && data.fileId) {
+            actualFileId = data.fileId
+            console.log(`✅ Retrieved fileId ${actualFileId} for asset ${assetId}`)
+          } else {
+            console.log(`❌ Failed to retrieve fileId for asset ${assetId}`)
+          }
+        } catch (error) {
+          console.error(`❌ Error retrieving fileId for asset ${assetId}:`, error)
+        }
+      }
+      
+      if (actualFileId) {
+        // Update source tracking to indicate we're trying Google Drive
+        const sourceKey = actualFileId || assetId
+        if (sourceKey) {
+          updateImageSource(sourceKey, 'api')
+        }
+        event.target.src = `/api/images/${actualFileId}`
+        console.log(`🔄 Set new src to Google Drive: /api/images/${actualFileId}`)
+      } else {
+        console.log(`❌ No fileId available for Google Drive fallback`)
+      }
+    } else if (event.target.src.includes('/api/images/')) {
+      // Google API failed in offline mode - try local file system as fallback
+      console.log(`🔄 Google API failed for file ${fileId} in offline mode, trying local file system`)
+      if (assetId) {
+        // Update source tracking to indicate we're trying local
+        const sourceKey = fileId || assetId
+        if (sourceKey) {
+          updateImageSource(sourceKey, 'local')
+        }
+        event.target.src = `/api/local-images/${encodeURIComponent(assetId)}?path=${encodeURIComponent(localImagePath.value)}`
+        console.log(`🔄 Set new src to local: /api/local-images/${assetId}`)
+      } else {
+        console.log(`❌ No assetId available for local fallback`)
+      }
+    }
   } else {
-    console.log(`❌ Not falling back - conditions not met`)
-    console.log(`❌ offlineMode: ${offlineMode.value}`)
-    console.log(`❌ localImagePath: ${localImagePath.value}`)
-    console.log(`❌ failed src: ${event.target.src}`)
-    console.log(`❌ src includes /api/local-images/: ${event.target.src.includes('/api/local-images/')}`)
+    // Not in offline mode - check local files first, then fall back to Google API
+    if (event.target.src.includes('/api/local-images/')) {
+      // Local image failed, try Google Drive as fallback
+      console.log(`🔄 Local image failed for file ${fileId}, falling back to Google Drive`)
+      
+      // If fileId is null, try to retrieve it from Google Drive
+      let actualFileId = fileId
+      if (!actualFileId && assetId) {
+        try {
+          console.log(`🔍 Retrieving fileId for asset ${assetId} from Google Drive`)
+          const response = await fetch(`/api/file-id/${assetId}`)
+          const data = await response.json()
+          if (data.success && data.fileId) {
+            actualFileId = data.fileId
+            console.log(`✅ Retrieved fileId ${actualFileId} for asset ${assetId}`)
+          } else {
+            console.log(`❌ Failed to retrieve fileId for asset ${assetId}`)
+          }
+        } catch (error) {
+          console.error(`❌ Error retrieving fileId for asset ${assetId}:`, error)
+        }
+      }
+      
+      if (actualFileId) {
+        // Update source tracking to indicate we're trying Google Drive
+        const sourceKey = actualFileId || assetId
+        if (sourceKey) {
+          updateImageSource(sourceKey, 'api')
+        }
+        event.target.src = `/api/images/${actualFileId}`
+        console.log(`🔄 Set new src: /api/images/${actualFileId}`)
+      } else {
+        console.log(`❌ No fileId available for Google Drive fallback`)
+      }
+    } else if (event.target.src.includes('/api/images/') && assetId && localImagePath.value) {
+      // Google Drive failed, try local file system as fallback
+      console.log(`🔄 Google Drive failed for file ${fileId}, trying local file system`)
+      // Update source tracking to indicate we're trying local
+      const sourceKey = fileId || assetId
+      if (sourceKey) {
+        updateImageSource(sourceKey, 'local')
+      }
+      event.target.src = `/api/local-images/${encodeURIComponent(assetId)}?path=${encodeURIComponent(localImagePath.value)}`
+      console.log(`🔄 Set new src to local: /api/local-images/${assetId}`)
+    } else {
+      console.log(`❌ No fallback available for file ${fileId}`)
+    }
   }
 }
 
@@ -2799,7 +2956,7 @@ async function importDatabase() {
                                           <div class="grid">
                                             <div class="col ref" ref="referenceImageRef">
                                               <h3>Reference Image</h3>
-                                              <div class="reference-container" v-if="referenceFileId && referenceFileId !== null && referenceFileId !== 'null' && referenceFileId !== 'undefined'" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}`">
+                                              <div class="reference-container" v-if="(referenceFileId && referenceFileId !== null && referenceFileId !== 'null' && referenceFileId !== 'undefined') || (offlineMode && localImagePath)" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}, offlineMode: ${offlineMode}, localImagePath: ${localImagePath}`">
                                                 <div class="reference-image-wrapper">
                                                   <img :src="referenceImageUrl" alt="reference" @load="handleImageLoad($event, referenceFileId, assetId)" @error="handleImageError($event, referenceFileId, assetId)" />
                                                   <div class="magnifier-icon" @click.stop="showReferenceImagePreview">
@@ -2819,7 +2976,7 @@ async function importDatabase() {
                                                   </div>
                                                 </div>
                                               </div>
-                                              <div v-else-if="!loading && !error && (!referenceFileId || referenceFileId === null || referenceFileId === 'null' || referenceFileId === 'undefined')" class="no-reference-image" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}`">
+                                              <div v-else-if="!loading && !error && (!referenceFileId || referenceFileId === null || referenceFileId === 'null' || referenceFileId === 'undefined') && !(offlineMode && localImagePath)" class="no-reference-image" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}, offlineMode: ${offlineMode}, localImagePath: ${localImagePath}`">
                                                 <div class="no-image-placeholder">
                                                   <div class="no-image-icon">🖼️</div>
                                                   <div class="no-image-text">
@@ -2899,11 +3056,11 @@ async function importDatabase() {
                                             
                                             <div class="col preds">
                                               <h3>Predicted Images</h3>
-                                              <div class="pred-grid">
-                                                <div
-                                                  v-for="p in predicted"
-                                                  :key="p.id"
-                                                  class="pred-container"
+                                                                                              <div class="pred-grid">
+                                                  <div
+                                                    v-for="p in filteredPredicted"
+                                                    :key="p.id"
+                                                    class="pred-container"
                                                 >
                                                   <div
                                                     class="pred"
@@ -2911,15 +3068,15 @@ async function importDatabase() {
                                                     @click="togglePredSelected(p.id)"
                                                     @contextmenu.prevent="togglePredRejected(p.id)"
                                                   >
-                                                    <img v-if="p.fileId" :src="predictedImageUrls.find(pu => pu.id === p.id)?.url || ''" :alt="p.id" @load="handleImageLoad($event, p.fileId, p.id)" @error="handleImageError($event, p.fileId, p.id)" />
+                                                    <img v-if="p.fileId || (offlineMode && localImagePath)" :src="predictedImageUrls.find(pu => pu.id === p.id)?.url || ''" :alt="p.id" @load="handleImageLoad($event, p.fileId, p.id)" @error="handleImageError($event, p.fileId, p.id)" />
                                                     <div class="magnifier-icon" @click.stop="showImagePreview(p)">
                                                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                                         <circle cx="11" cy="11" r="8"></circle>
                                                         <path d="m21 21-4.35-4.35"></path>
                                                       </svg>
                                                     </div>
-                                                    <div class="source-icon" :class="predictedImageSources.find(ps => ps.fileId === p.fileId)?.source || 'api'">
-                                                      <svg v-if="(predictedImageSources.find(ps => ps.fileId === p.fileId)?.source || 'api') === 'local'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                    <div class="source-icon" :class="imageActualSources[p.fileId || p.id] || 'api'">
+                                                      <svg v-if="(imageActualSources[p.fileId || p.id] || 'api') === 'local'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                                         <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
                                                         <polyline points="14,2 14,8 20,8"/>
                                                       </svg>
