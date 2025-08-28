@@ -1956,13 +1956,36 @@ function loadOfflineSettings() {
   console.log(`🔍 savedOfflineMode: ${savedOfflineMode}`)
   console.log(`🔍 savedLocalPath: ${savedLocalPath}`)
   
-  if (savedOfflineMode !== null) {
-    offlineMode.value = JSON.parse(savedOfflineMode)
-    console.log(`🔍 Set offlineMode.value to: ${offlineMode.value}`)
-  }
   if (savedLocalPath !== null) {
     localImagePath.value = savedLocalPath
     console.log(`🔍 Set localImagePath.value to: ${localImagePath.value}`)
+  } else {
+    // Try to auto-detect common local image paths
+    const commonPaths = [
+      'D:\\LocalMediabankImages\\ALL_IMAGES',
+      'C:\\LocalMediabankImages\\ALL_IMAGES',
+      '/mnt/c/LocalMediabankImages/ALL_IMAGES',
+      './images',
+      './assets/images'
+    ]
+    
+    // For now, set a default path if none is saved
+    if (!localImagePath.value) {
+      localImagePath.value = 'D:\\LocalMediabankImages\\ALL_IMAGES'
+      console.log(`🔍 Set default localImagePath.value to: ${localImagePath.value}`)
+      localStorage.setItem('localImagePath', localImagePath.value)
+    }
+  }
+  
+  // Auto-enable offline mode if local path is available and no explicit setting exists
+  if (savedOfflineMode !== null) {
+    offlineMode.value = JSON.parse(savedOfflineMode)
+    console.log(`🔍 Set offlineMode.value to: ${offlineMode.value} (from localStorage)`)
+  } else if (localImagePath.value) {
+    // Auto-enable offline mode if we have a local path but no saved preference
+    offlineMode.value = true
+    console.log(`🔍 Auto-enabled offline mode because local images are available at: ${localImagePath.value}`)
+    localStorage.setItem('offlineMode', JSON.stringify(true))
   }
   
   console.log(`🔍 Final state - offlineMode: ${offlineMode.value}, localImagePath: ${localImagePath.value}`)
