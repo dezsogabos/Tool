@@ -129,9 +129,7 @@ function handleKeyPress(event) {
           {{ error }}
         </div>
         
-        <div class="login-footer">
-          <p>Demo credentials: <code>admin / admin</code></p>
-        </div>
+
       </div>
     </div>
   </div>

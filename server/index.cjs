@@ -596,7 +596,7 @@ function parseArrayField(value) {
   }
 }
 
-// Batch file ID lookup for better performance
+// Database-stored file ID mapping for permanent storage
 async function getBatchFileIds(assetIds) {
   console.log(`🔍 getBatchFileIds called for ${assetIds.length} assets`)
   
@@ -607,8 +607,37 @@ async function getBatchFileIds(assetIds) {
   }
   
   try {
-    // Get all files in the folder at once
-    console.log(`🔍 Fetching all files from Google Drive folder...`)
+    // First, check if we have file IDs stored in the database
+    const client = await getTursoClient()
+    if (!client) {
+      console.log(`❌ Turso client not available for file ID lookup`)
+      return {}
+    }
+    
+    // Check if we have any file IDs stored in the database
+    const dbCheck = await client.execute({
+      sql: 'SELECT COUNT(*) as count FROM assets WHERE file_ids IS NOT NULL AND file_ids != "" AND file_ids != "{}"',
+      args: []
+    })
+    
+    const hasStoredFileIds = dbCheck.rows[0].count > 0
+    
+    if (hasStoredFileIds) {
+      console.log(`📦 Using database-stored file ID mappings`)
+      
+      // Look up file IDs for requested asset IDs from database
+      const result = {}
+      for (const assetId of assetIds) {
+        const fileId = await getCachedFileId(assetId)
+        result[assetId] = fileId
+      }
+      
+      console.log(`🔍 Database lookup completed: ${Object.values(result).filter(id => id !== null).length} file IDs found`)
+      return result
+    }
+    
+    // No file IDs in database, fetch all from Google Drive and store permanently
+    console.log(`🔄 No file IDs in database, fetching all files from Google Drive and storing permanently...`)
     const allFiles = []
     let pageToken = null
     
@@ -627,16 +656,31 @@ async function getBatchFileIds(assetIds) {
     console.log(`🔍 Found ${allFiles.length} total files in Google Drive folder`)
     
     // Create a map of filename to file ID
-    const fileMap = {}
+    const fileIdMap = {}
     for (const file of allFiles) {
       const nameWithoutExt = file.name.replace(/\.(jpg|jpeg|png|gif|bmp|webp)$/i, '')
-      fileMap[nameWithoutExt] = file.id
+      fileIdMap[nameWithoutExt] = file.id
     }
+    
+    console.log(`💾 Storing ${Object.keys(fileIdMap).length} file mappings permanently in database...`)
+    
+    // Store all file IDs in the database permanently
+    let storedCount = 0
+    for (const [assetId, fileId] of Object.entries(fileIdMap)) {
+      try {
+        await setCachedFileId(assetId, fileId)
+        storedCount++
+      } catch (error) {
+        console.warn(`Failed to store file ID for ${assetId}:`, error.message)
+      }
+    }
+    
+    console.log(`✅ Permanently stored ${storedCount} file mappings in database`)
     
     // Look up file IDs for requested asset IDs
     const result = {}
     for (const assetId of assetIds) {
-      result[assetId] = fileMap[assetId] || null
+      result[assetId] = fileIdMap[assetId] || null
     }
     
     console.log(`🔍 Batch lookup completed: ${Object.values(result).filter(id => id !== null).length} file IDs found`)
@@ -648,10 +692,55 @@ async function getBatchFileIds(assetIds) {
   }
 }
 
+// Function to clear all file IDs from database (useful for debugging or forcing refresh)
+async function clearAllFileIds() {
+  try {
+    const client = await getTursoClient()
+    if (!client) {
+      console.log('❌ Turso client not available')
+      return
+    }
+    
+    await client.execute('UPDATE assets SET file_ids = NULL')
+    console.log('🧹 All file IDs cleared from database')
+  } catch (error) {
+    console.error('Failed to clear file IDs:', error.message)
+  }
+}
+
+// Function to get file ID storage status
+async function getFileIdStorageStatus() {
+  try {
+    const client = await getTursoClient()
+    if (!client) {
+      return { stored: false, fileCount: 0 }
+    }
+    
+    const result = await client.execute({
+      sql: 'SELECT COUNT(*) as total, COUNT(CASE WHEN file_ids IS NOT NULL AND file_ids != "" AND file_ids != "{}" THEN 1 END) as withFileIds FROM assets',
+      args: []
+    })
+    
+    const total = result.rows[0].total
+    const withFileIds = result.rows[0].withFileIds
+    
+    return {
+      stored: withFileIds > 0,
+      totalAssets: total,
+      assetsWithFileIds: withFileIds,
+      percentage: total > 0 ? Math.round((withFileIds / total) * 100) : 0
+    }
+  } catch (error) {
+    console.error('Failed to get file ID storage status:', error.message)
+    return { stored: false, fileCount: 0, error: error.message }
+  }
+}
+
 async function getFileIdByAssetId(assetId) {
-  // First, check if we have a cached file ID
+  // First, check if we have a cached file ID in the database
   const cachedFileId = await getCachedFileId(assetId)
   if (cachedFileId) {
+    console.log(`✅ Found cached file ID for ${assetId}: ${cachedFileId}`)
     return cachedFileId
   }
   
@@ -2363,24 +2452,24 @@ app.get('/api/assets-fast/:assetId', async (req, res) => {
 app.get('/api/file-id/:assetId', async (req, res) => {
   try {
     const assetId = String(req.params.assetId).trim()
-    
+
     if (!assetId) return res.status(400).json({ error: 'assetId required' })
-    
+
     if (!ALL_DATASET_FOLDER_ID) {
       return res.status(400).json({ error: 'Google Drive API not configured' })
     }
-    
+
     console.log(`🔍 Retrieving fileId for asset ${assetId}`)
     const fileId = await getFileIdByAssetId(assetId)
-    
-    res.json({ 
-      assetId, 
+
+    res.json({
+      assetId,
       fileId,
       success: !!fileId
     })
   } catch (e) {
     console.error(`Error retrieving fileId for asset ${req.params.assetId}:`, e)
-    res.status(500).json({ 
+    res.status(500).json({
       error: e.message,
       assetId: req.params.assetId,
       fileId: null,
@@ -2388,6 +2477,131 @@ app.get('/api/file-id/:assetId', async (req, res) => {
     })
   }
 })
+
+// File ID storage management endpoints
+app.get('/api/cache/status', async (req, res) => {
+  try {
+    const status = await getFileIdStorageStatus()
+    res.json({
+      fileIdStorage: status,
+      message: status.stored 
+        ? `Database has ${status.assetsWithFileIds}/${status.totalAssets} assets with file IDs (${status.percentage}%)`
+        : 'No file IDs stored in database'
+    })
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      message: 'Failed to get file ID storage status'
+    })
+  }
+})
+
+app.post('/api/cache/clear', async (req, res) => {
+  try {
+    await clearAllFileIds()
+    res.json({ 
+      message: 'All file IDs cleared from database successfully',
+      timestamp: new Date().toISOString()
+    })
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      message: 'Failed to clear file IDs from database'
+    })
+  }
+})
+
+// New endpoint to populate all file IDs from Google Drive
+app.post('/api/populate-all-file-ids', async (req, res) => {
+  try {
+    console.log('🔄 Manual population of all file IDs requested')
+    
+    const drive = getDrive()
+    if (!drive || !ALL_DATASET_FOLDER_ID) {
+      return res.status(400).json({
+        error: 'Google Drive API not configured',
+        message: 'Cannot populate file IDs without Google Drive access'
+      })
+    }
+    
+    // Start the population process in the background
+    populateAllFileIds().catch(error => {
+      console.error('❌ Error in background file ID population:', error.message)
+    })
+    
+    res.json({ 
+      message: 'File ID population started in background',
+      timestamp: new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('❌ Error starting file ID population:', error.message)
+    res.status(500).json({ 
+      error: error.message,
+      message: 'Failed to start file ID population'
+    })
+  }
+})
+
+// Function to populate all file IDs from Google Drive
+async function populateAllFileIds() {
+  try {
+    console.log('🔄 Starting population of all file IDs from Google Drive...')
+    
+    const drive = getDrive()
+    if (!drive || !ALL_DATASET_FOLDER_ID) {
+      console.log('⚠️ Google Drive not available for file ID population')
+      return
+    }
+    
+    // Fetch all files from Google Drive
+    const allFiles = []
+    let pageToken = null
+    
+    do {
+      const response = await drive.files.list({
+        q: `'${ALL_DATASET_FOLDER_ID}' in parents and trashed=false`,
+        fields: 'files(id, name), nextPageToken',
+        pageSize: 1000,
+        pageToken: pageToken
+      })
+      
+      allFiles.push(...(response.data.files || []))
+      pageToken = response.data.nextPageToken
+    } while (pageToken)
+    
+    console.log(`🔍 Found ${allFiles.length} total files in Google Drive folder`)
+    
+    // Create a map of filename to file ID
+    const fileIdMap = {}
+    for (const file of allFiles) {
+      const nameWithoutExt = file.name.replace(/\.(jpg|jpeg|png|gif|bmp|webp)$/i, '')
+      fileIdMap[nameWithoutExt] = file.id
+    }
+    
+    console.log(`💾 Storing ${Object.keys(fileIdMap).length} file mappings permanently in database...`)
+    
+    // Store all file IDs in the database permanently
+    let storedCount = 0
+    for (const [assetId, fileId] of Object.entries(fileIdMap)) {
+      try {
+        await setCachedFileId(assetId, fileId)
+        storedCount++
+        
+        // Log progress every 100 files
+        if (storedCount % 100 === 0) {
+          console.log(`📊 Progress: ${storedCount}/${Object.keys(fileIdMap).length} file IDs stored`)
+        }
+      } catch (error) {
+        console.warn(`Failed to store file ID for ${assetId}:`, error.message)
+      }
+    }
+    
+    console.log(`✅ Successfully stored ${storedCount} file mappings permanently in database`)
+    
+  } catch (error) {
+    console.error('❌ Error in file ID population:', error.message)
+  }
+}
 
 // For Vercel serverless deployment
 if (process.env.NODE_ENV === 'production') {

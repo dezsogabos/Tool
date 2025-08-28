@@ -763,10 +763,14 @@ function scrollToReferenceImage() {
   console.log('🔍 referenceFileId.value === "null":', referenceFileId.value === 'null')
   console.log('🔍 referenceFileId.value === "undefined":', referenceFileId.value === 'undefined')
   console.log('🔍 !referenceFileId.value:', !referenceFileId.value)
+  console.log('🔍 offlineMode.value:', offlineMode.value)
+  console.log('🔍 localImagePath.value:', localImagePath.value)
   
-  // Only attempt to scroll if we have a reference file ID (meaning there should be a reference image)
-  if (!referenceFileId.value || referenceFileId.value === null || referenceFileId.value === 'null' || referenceFileId.value === 'undefined') {
-    console.log('No reference file ID, skipping scroll')
+  // Check if we should have a reference image (same logic as template)
+  const hasReferenceImage = (referenceFileId.value && referenceFileId.value !== null && referenceFileId.value !== 'null' && referenceFileId.value !== 'undefined') || (offlineMode.value && localImagePath.value)
+  
+  if (!hasReferenceImage) {
+    console.log('No reference image should be displayed, skipping scroll')
     return
   }
   
@@ -1592,6 +1596,11 @@ function handleAssetIdClick(id) {
     
     // Call handleSearch with error handling
     handleSearch()
+    
+    // Auto-scroll to reference image after a delay to ensure DOM is updated
+    setTimeout(() => {
+      scrollToReferenceImage()
+    }, 500)
   } catch (error) {
     console.error('Error handling asset ID click:', error)
     error.value = 'Failed to load asset. Please try again.'
@@ -2988,7 +2997,7 @@ async function importDatabase() {
                                                   </div>
                                                 </div>
                                               </div>
-                                              <div v-else-if="!loading && !error && (!referenceFileId || referenceFileId === null || referenceFileId === 'null' || referenceFileId === 'undefined') && !(offlineMode && localImagePath)" class="no-reference-image" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}, offlineMode: ${offlineMode}, localImagePath: ${localImagePath}`">
+                                              <div v-else-if="!((referenceFileId && referenceFileId !== null && referenceFileId !== 'null' && referenceFileId !== 'undefined') || (offlineMode && localImagePath))" class="no-reference-image" :data-debug="`refFileId: ${referenceFileId}, type: ${typeof referenceFileId}, offlineMode: ${offlineMode}, localImagePath: ${localImagePath}`">
                                                 <div class="no-image-placeholder">
                                                   <div class="no-image-icon">🖼️</div>
                                                   <div class="no-image-text">
@@ -3063,7 +3072,6 @@ async function importDatabase() {
                                                  <small>💡 Keyboard shortcuts: ← → to navigate, Enter to complete review, Delete to clear review</small>
                                                  <small v-if="isPrefetching" class="prefetch-indicator">🚀 Pre-fetching...</small>
                                                </div>
-                                              <p v-else class="info">Reference image not found.</p>
                                             </div>
                                             
                                             <div class="col preds">
