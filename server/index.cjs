@@ -190,16 +190,20 @@ async function getTursoClient() {
       const url = process.env.TURSO_DATABASE_URL
       const authToken = process.env.TURSO_AUTH_TOKEN
       
-      // Always require Turso credentials
+      // For local development, use in-memory SQLite if no Turso URL is provided
       if (!url || !authToken) {
-        throw new Error('TURSO_DATABASE_URL and TURSO_AUTH_TOKEN environment variables are required')
+        console.log('🔧 Local development detected - using in-memory SQLite')
+        // For local development, create an in-memory database
+        tursoClient = createTursoClient({
+          url: 'file::memory:?cache=shared'
+        })
+      } else {
+        console.log('🌐 Production detected - using Turso SQLite')
+        tursoClient = createTursoClient({
+          url: url,
+          authToken: authToken
+        })
       }
-      
-      console.log('🌐 Connecting to Turso SQLite database')
-      tursoClient = createTursoClient({
-        url: url,
-        authToken: authToken
-      })
       
       // Test the connection
       await tursoClient.execute('SELECT 1')
@@ -484,7 +488,10 @@ async function getAssetCount() {
 
 // Initialize database with sample data if empty (local development only)
 async function initializeDatabase() {
-  if (process.env.NODE_ENV === 'production') {
+  // Check if we're using in-memory database (local development)
+  const isLocalDevelopment = !process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN
+  
+  if (process.env.NODE_ENV === 'production' && !isLocalDevelopment) {
     console.log('Production environment: Database will be populated by CSV imports')
     return
   }
@@ -2119,7 +2126,8 @@ app.get('/api/test', async (_req, res) => {
       tables: tables,
       assetCount: assetCount,
       importJobs: importJobs,
-      environment: process.env.TURSO_DATABASE_URL ? 'production' : 'local'
+             environment: process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN ? 'production' : 'local',
+       databaseType: process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN ? 'turso' : 'in-memory'
     })
   } catch (error) {
     console.error('Test endpoint error:', error)
