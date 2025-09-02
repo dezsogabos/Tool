@@ -1077,6 +1077,17 @@ function handleKeyboardNavigation(event) {
         console.log('🔍 Cannot go to previous: at first asset or no assets loaded')
       }
       break
+    case '.':
+      // Select all predicted images
+      if (predicted.value && predicted.value.length > 0) {
+        event.preventDefault()
+        const allIds = predicted.value.map(p => String(p.id))
+        selectedPredictedIds.value = allIds
+        // ensure rejected is cleared for selected ones
+        rejectedPredictedIds.value = []
+        console.log('✅ Keyboard: Selected all predicted IDs')
+      }
+      break
     case 'ArrowRight':
     case 'd':
     case 'D':
