@@ -1077,7 +1077,7 @@ function handleKeyboardNavigation(event) {
         console.log('🔍 Cannot go to previous: at first asset or no assets loaded')
       }
       break
-    case '.':
+    case '+':
       // Select all predicted images
       if (predicted.value && predicted.value.length > 0) {
         event.preventDefault()
