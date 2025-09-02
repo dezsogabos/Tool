@@ -1088,6 +1088,16 @@ function handleKeyboardNavigation(event) {
         console.log('✅ Keyboard: Selected all predicted IDs')
       }
       break
+    case '-':
+      // Unselect all predicted images
+      if (predicted.value && predicted.value.length > 0) {
+        event.preventDefault()
+        selectedPredictedIds.value = []
+        // mark all as rejected to keep visible frames
+        rejectedPredictedIds.value = predicted.value.map(p => String(p.id))
+        console.log('✅ Keyboard: Unselected all predicted IDs')
+      }
+      break
     case 'ArrowRight':
     case 'd':
     case 'D':
