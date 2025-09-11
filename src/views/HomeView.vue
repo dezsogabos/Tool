@@ -442,9 +442,17 @@ async function loadPage(p = 1) {
       console.log('Loaded filtered page data:', data)
       ids.value = Array.isArray(data?.ids) ? data.ids : []
       page.value = Number(data?.page) || 1
-      pageCount.value = Number(data?.pageCount) || 0
       totalAssets.value = Number(data?.total) || 0
       overallTotalAssets.value = Number(data?.overallTotal) || 0
+      
+      // Calculate pageCount if not provided or if it's 0 but we have assets
+      const calculatedPageCount = Math.ceil(totalAssets.value / pageSize.value)
+      pageCount.value = Number(data?.pageCount) || calculatedPageCount
+      
+      // Ensure pageCount is at least 1 if we have any assets
+      if (totalAssets.value > 0 && pageCount.value === 0) {
+        pageCount.value = 1
+      }
     } else {
       // Use the regular endpoint for 'all' filter
       const res = await fetch(`/api/assets-page?page=${p}&pageSize=${pageSize.value}`)
@@ -452,9 +460,17 @@ async function loadPage(p = 1) {
       console.log('Loaded page data:', data)
       ids.value = Array.isArray(data?.ids) ? data.ids : []
       page.value = Number(data?.page) || 1
-      pageCount.value = Number(data?.pageCount) || 0
       totalAssets.value = Number(data?.total) || 0
       overallTotalAssets.value = Number(data?.total) || 0 // For 'all' filter, total is the same as overallTotal
+      
+      // Calculate pageCount if not provided or if it's 0 but we have assets
+      const calculatedPageCount = Math.ceil(totalAssets.value / pageSize.value)
+      pageCount.value = Number(data?.pageCount) || calculatedPageCount
+      
+      // Ensure pageCount is at least 1 if we have any assets
+      if (totalAssets.value > 0 && pageCount.value === 0) {
+        pageCount.value = 1
+      }
     }
     
     console.log('Asset IDs loaded:', ids.value.length, 'ids:', ids.value.slice(0, 5))
@@ -956,10 +972,47 @@ function saveApplicationState() {
       timestamp: Date.now()
     }
     
-    localStorage.setItem('applicationState', JSON.stringify(state))
-    console.log('💾 Application state saved successfully')
+    const stateString = JSON.stringify(state)
+    
+    // Check if the state is too large for localStorage (typically 5-10MB limit)
+    if (stateString.length > 4 * 1024 * 1024) { // 4MB threshold
+      console.warn('⚠️ Application state too large for localStorage, saving minimal state only')
+      
+      // Save only essential navigation state
+      const minimalState = {
+        page: page.value,
+        pageSize: pageSize.value,
+        assetFilter: assetFilter.value,
+        activeTab: activeTab.value,
+        darkMode: darkMode.value,
+        offlineMode: offlineMode.value,
+        localImagePath: localImagePath.value,
+        timestamp: Date.now()
+      }
+      
+      localStorage.setItem('applicationState', JSON.stringify(minimalState))
+      console.log('💾 Minimal application state saved successfully')
+    } else {
+      localStorage.setItem('applicationState', stateString)
+      console.log('💾 Application state saved successfully')
+    }
   } catch (error) {
     console.error('Error saving application state:', error)
+    
+    // If localStorage fails completely, try to save minimal state
+    try {
+      const minimalState = {
+        page: page.value,
+        pageSize: pageSize.value,
+        assetFilter: assetFilter.value,
+        activeTab: activeTab.value,
+        timestamp: Date.now()
+      }
+      localStorage.setItem('applicationState', JSON.stringify(minimalState))
+      console.log('💾 Fallback minimal state saved')
+    } catch (fallbackError) {
+      console.error('Failed to save even minimal state:', fallbackError)
+    }
   }
 }
 
@@ -3037,7 +3090,7 @@ async function importDatabase() {
 
                      <p v-if="overallTotalAssets > 0 && totalAssets === 0 && !loading" class="warn">No assets match the current filter. Try changing the filter or review some assets first.</p>
 
-                     <div class="pager" v-if="overallTotalAssets > 0">
+                     <div class="pager" v-if="overallTotalAssets > 0 || totalAssets > 0">
              <button :disabled="page===1" @click="goPage(1)">First</button>
              <button :disabled="page===1" @click="goPage(page-1)">Previous</button>
              <span>{{ page }} of {{ pageCount }}</span>
