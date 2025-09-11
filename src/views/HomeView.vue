@@ -516,6 +516,16 @@ function handleAssetFilterChange() {
   }
 }
 
+function getFilterDisplayName(filter) {
+  switch (filter) {
+    case 'accepted': return 'Accepted'
+    case 'rejected': return 'Rejected'
+    case 'not-reviewed': return 'Not Reviewed'
+    case 'all': return 'Assets'
+    default: return 'Assets'
+  }
+}
+
 function handleAccept() {
   if (!assetId.value.trim()) return
   
@@ -3116,6 +3126,11 @@ async function importDatabase() {
                  <option value="100">100</option>
                </select>
              </div>
+             
+             <div class="total-count-display">
+               <span class="total-label">Total {{ getFilterDisplayName(assetFilter) }}:</span>
+               <span class="total-number">{{ totalAssets.toLocaleString() }}</span>
+             </div>
            </div>
 
          <p v-if="showEmptyInfo" class="info">Please enter an asset ID to view images.</p>
@@ -5145,6 +5160,37 @@ input#assetId::placeholder {
 
 .asset-filter-selector select:hover {
   border-color: var(--color-primary);
+}
+
+.total-count-display {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--color-bg-secondary);
+  border-radius: 3rem;
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+}
+
+.total-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.total-number {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  background: var(--color-bg);
+  padding: 0.25rem 0.75rem;
+  border-radius: 2rem;
+  border: 1px solid var(--color-primary);
+  min-width: 3rem;
+  text-align: center;
 }
 /* Asset ID Pills */
 .id-page { 
