@@ -28,8 +28,8 @@ try {
 const app = express()
 
 // Middleware
-app.use(express.json())
-app.use(express.urlencoded({ extended: true }))
+app.use(express.json({ limit: '10mb' })) // Increase limit to 10MB for large review datasets
+app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 app.use(fileUpload({
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
   abortOnLimit: true,
