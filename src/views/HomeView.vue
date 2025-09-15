@@ -4501,14 +4501,14 @@ input#assetId::placeholder {
   box-shadow: var(--shadow-md);
 }
 .pred.selected { 
-  border-color: #15803d; 
-  background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-  box-shadow: 0 0 0 4px rgba(21, 128, 61, 0.2);
+  border-color: #14532d; 
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  box-shadow: 0 0 0 4px rgba(20, 83, 45, 0.3);
 }
 .pred.rejected { 
-  border-color: #b91c1c; 
-  background: linear-gradient(135deg, #fef2f2 0%, #fecaca 100%);
-  box-shadow: 0 0 0 4px rgba(185, 28, 28, 0.2);
+  border-color: #991b1b; 
+  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  box-shadow: 0 0 0 4px rgba(153, 27, 27, 0.3);
 }
 .pred img { 
   width: 100%; 
