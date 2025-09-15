@@ -4410,9 +4410,10 @@ input#assetId::placeholder {
 /* Image Grids */
  .pred-grid { 
    display: grid; 
-   grid-template-columns: repeat(3, 1fr); 
-   gap: 1.5rem; 
+   grid-template-columns: repeat(3, 0.9fr); 
+   gap: 1.25rem; 
    padding: 1rem;
+   justify-content: center;
  }
 .pred-container {
   display: flex;
