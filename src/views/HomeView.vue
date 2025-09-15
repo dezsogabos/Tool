@@ -4437,14 +4437,14 @@ input#assetId::placeholder {
   box-shadow: var(--shadow-md);
 }
 .pred.selected { 
-  border-color: #16a34a; 
-  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
-  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.1);
+  border-color: #15803d; 
+  background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+  box-shadow: 0 0 0 4px rgba(21, 128, 61, 0.2);
 }
 .pred.rejected { 
-  border-color: #dc2626; 
-  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
-  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
+  border-color: #b91c1c; 
+  background: linear-gradient(135deg, #fef2f2 0%, #fecaca 100%);
+  box-shadow: 0 0 0 4px rgba(185, 28, 28, 0.2);
 }
 .pred img { 
   width: 100%; 
