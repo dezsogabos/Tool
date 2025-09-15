@@ -1108,12 +1108,12 @@ function toggleDarkMode() {
 
 // Toggle predicted image by index (for numeric pad shortcuts)
 function togglePredictedByIndex(index) {
-  if (!predicted.value || index >= predicted.value.length) {
+  if (!filteredPredicted.value || index >= filteredPredicted.value.length) {
     console.log(`🔍 No predicted image at index ${index}`)
     return
   }
   
-  const predictedItem = predicted.value[index]
+  const predictedItem = filteredPredicted.value[index]
   const predictedId = String(predictedItem.id)
   
   console.log(`🔢 Toggling predicted image at index ${index} (ID: ${predictedId})`)
@@ -1235,39 +1235,39 @@ function handleKeyboardNavigation(event) {
     // Numeric pad shortcuts for predicted images (3x3 grid)
     case '7':
       event.preventDefault()
-      togglePredictedByIndex(0) // Top-left
+      togglePredictedByIndex(0) // Top-left (index 0)
       break
     case '8':
       event.preventDefault()
-      togglePredictedByIndex(1) // Top-center
+      togglePredictedByIndex(1) // Top-center (index 1)
       break
     case '9':
       event.preventDefault()
-      togglePredictedByIndex(2) // Top-right
+      togglePredictedByIndex(2) // Top-right (index 2)
       break
     case '4':
       event.preventDefault()
-      togglePredictedByIndex(3) // Middle-left
+      togglePredictedByIndex(3) // Middle-left (index 3)
       break
     case '5':
       event.preventDefault()
-      togglePredictedByIndex(4) // Middle-center
+      togglePredictedByIndex(4) // Middle-center (index 4)
       break
     case '6':
       event.preventDefault()
-      togglePredictedByIndex(5) // Middle-right
+      togglePredictedByIndex(5) // Middle-right (index 5)
       break
     case '1':
       event.preventDefault()
-      togglePredictedByIndex(6) // Bottom-left
+      togglePredictedByIndex(6) // Bottom-left (index 6)
       break
     case '2':
       event.preventDefault()
-      togglePredictedByIndex(7) // Bottom-center
+      togglePredictedByIndex(7) // Bottom-center (index 7)
       break
     case '3':
       event.preventDefault()
-      togglePredictedByIndex(8) // Bottom-right
+      togglePredictedByIndex(8) // Bottom-right (index 8)
       break
   }
 }
