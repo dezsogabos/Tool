@@ -4410,7 +4410,7 @@ input#assetId::placeholder {
 /* Image Grids */
  .pred-grid { 
    display: grid; 
-   grid-template-columns: repeat(5, 1fr); 
+   grid-template-columns: repeat(3, 1fr); 
    gap: 2.5rem; 
    padding: 1.5rem;
  }
@@ -4421,15 +4421,16 @@ input#assetId::placeholder {
 }
 .pred { 
   position: relative;
-  border: 2px solid transparent; 
+  border: 3px solid transparent; 
   border-radius: 2.5rem; 
-  padding: 0.75rem; 
+  padding: 1.25rem; 
   cursor: pointer; 
   transition: all 0.3s ease;
   background: var(--color-bg);
   box-shadow: var(--shadow-sm);
   width: 100%;
   min-width: 0;
+  min-height: 200px;
 }
 .pred:hover {
   transform: translateY(-2px);
@@ -4447,7 +4448,7 @@ input#assetId::placeholder {
 }
 .pred img { 
   width: 100%; 
-  height: 280px; 
+  height: 350px; 
   border-radius: var(--radius-xl); 
   border: none; 
   object-fit: contain;
