@@ -4410,8 +4410,8 @@ input#assetId::placeholder {
 /* Image Grids */
  .pred-grid { 
    display: grid; 
-   grid-template-columns: repeat(3, 0.9fr); 
-   gap: 1.25rem; 
+   grid-template-columns: repeat(3, 0.8fr); 
+   gap: 1.5rem; 
    padding: 1rem;
    justify-content: center;
  }
@@ -4424,7 +4424,7 @@ input#assetId::placeholder {
   position: relative;
   border: 2px solid transparent; 
   border-radius: 1.5rem; 
-  padding: 0.75rem; 
+  padding: 0.5rem; 
   cursor: pointer; 
   transition: all 0.3s ease;
   background: var(--color-bg);
