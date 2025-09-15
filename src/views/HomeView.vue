@@ -1106,6 +1106,32 @@ function toggleDarkMode() {
   console.log('Dark mode toggled to:', darkMode.value)
 }
 
+// Toggle predicted image by index (for numeric pad shortcuts)
+function togglePredictedByIndex(index) {
+  if (!predicted.value || index >= predicted.value.length) {
+    console.log(`🔍 No predicted image at index ${index}`)
+    return
+  }
+  
+  const predictedItem = predicted.value[index]
+  const predictedId = String(predictedItem.id)
+  
+  console.log(`🔢 Toggling predicted image at index ${index} (ID: ${predictedId})`)
+  
+  // Toggle selection
+  if (isPredSelected(predictedId)) {
+    // If selected, unselect it
+    selectedPredictedIds.value = selectedPredictedIds.value.filter(id => id !== predictedId)
+    rejectedPredictedIds.value = [...rejectedPredictedIds.value, predictedId]
+    console.log(`❌ Unselected predicted image ${predictedId}`)
+  } else {
+    // If not selected, select it
+    selectedPredictedIds.value = [...selectedPredictedIds.value, predictedId]
+    rejectedPredictedIds.value = rejectedPredictedIds.value.filter(id => id !== predictedId)
+    console.log(`✅ Selected predicted image ${predictedId}`)
+  }
+}
+
 // Keyboard navigation handler
 function handleKeyboardNavigation(event) {
   // Only handle keyboard events when we're on the review tab and have an asset loaded
@@ -1205,6 +1231,43 @@ function handleKeyboardNavigation(event) {
         searchInput.focus()
         searchInput.select()
       }
+      break
+    // Numeric pad shortcuts for predicted images (3x3 grid)
+    case '7':
+      event.preventDefault()
+      togglePredictedByIndex(0) // Top-left
+      break
+    case '8':
+      event.preventDefault()
+      togglePredictedByIndex(1) // Top-center
+      break
+    case '9':
+      event.preventDefault()
+      togglePredictedByIndex(2) // Top-right
+      break
+    case '4':
+      event.preventDefault()
+      togglePredictedByIndex(3) // Middle-left
+      break
+    case '5':
+      event.preventDefault()
+      togglePredictedByIndex(4) // Middle-center
+      break
+    case '6':
+      event.preventDefault()
+      togglePredictedByIndex(5) // Middle-right
+      break
+    case '1':
+      event.preventDefault()
+      togglePredictedByIndex(6) // Bottom-left
+      break
+    case '2':
+      event.preventDefault()
+      togglePredictedByIndex(7) // Bottom-center
+      break
+    case '3':
+      event.preventDefault()
+      togglePredictedByIndex(8) // Bottom-right
       break
   }
 }
